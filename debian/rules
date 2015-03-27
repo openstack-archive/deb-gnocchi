@@ -50,8 +50,17 @@ ifeq (,$(findstring nocheck, $(DEB_BUILD_OPTIONS)))
 endif
 
 override_dh_sphinxdoc:
-	PYTHONPATH=. sphinx-build -b html doc/source debian/python-gnocchi-doc/usr/share/doc/python-gnocchi-doc/html
-	dh_sphinxdoc -O--buildsystem=python_distutils
+		echo "===> Starting PGSQL" ; \
+		BINDIR=`pg_config --bindir` ; \
+		PG_MYTMPDIR=`mktemp -d` ; \
+		chown postgres:postgres $$PG_MYTMPDIR || true ; \
+		export PGHOST=$$PG_MYTMPDIR ; \
+		chmod +x debian/start_pg.sh ; \
+		debian/start_pg.sh $$PG_MYTMPDIR ; \
+		export GNOCCHI_TEST_INDEXER_URL="postgresql:///template1?host=$$PG_MYTMPDIR&port=9823" ; \
+	PYTHONPATH=. sphinx-build -b html doc/source debian/python-gnocchi-doc/usr/share/doc/python-gnocchi-doc/html ; \
+	dh_sphinxdoc -O--buildsystem=python_distutils ; \
+		$$BINDIR/pg_ctl stop -D $$PG_MYTMPDIR
 
 override_dh_clean:
 	dh_clean -O--buildsystem=python_distutils
