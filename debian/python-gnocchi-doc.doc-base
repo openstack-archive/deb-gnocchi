@@ -1,0 +1,9 @@
+Document: python-gnocchi-doc
+Title: gnocchi Documentation
+Author: N/A
+Abstract: Sphinx documentation for gnocchi
+Section: Programming/Python
+
+Format: HTML
+Index: /usr/share/doc/python-gnocchi-doc/html/index.html
+Files: /usr/share/doc/python-gnocchi-doc/html/*

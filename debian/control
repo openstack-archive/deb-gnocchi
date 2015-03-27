@@ -1,0 +1,109 @@
+Source: gnocchi
+Section: python
+Priority: optional
+Maintainer: PKG OpenStack <openstack-devel@lists.alioth.debian.org>
+Uploaders: Thomas Goirand <zigo@debian.org>
+Build-Depends: debhelper (>= 9),
+               dh-python,
+               openstack-pkg-tools (>= 22~),
+               python-all (>= 2.6.6-3~),
+               python-pbr,
+               python-setuptools,
+               python-sphinx,
+Build-Depends-Indep: python-ceilometer (>= 2015.1~b3),
+                     python-concurrent.futures (>= 2.1.6),
+                     python-coverage (>= 3.6),
+                     python-fixtures,
+                     python-flask,
+                     python-future,
+                     python-gabbi (>= 0.6.0),
+                     python-jinja2,
+                     python-keystonemiddleware,
+                     python-mock,
+                     python-msgpack,
+                     python-mysqldb,
+                     python-numpy,
+                     python-oslo.config (>= 1.4.1),
+                     python-oslo.db (>= 0.5.0),
+                     python-oslo.log,
+                     python-oslo.policy (>= 0.3.0),
+                     python-oslo.serialization (>= 1.0.0),
+                     python-oslo.utils (>= 0.3.0),
+                     python-oslosphinx (>= 2.2.0.0),
+                     python-oslotest,
+                     python-pandas,
+                     python-pecan,
+                     python-psycopg2,
+                     python-pytimeparse,
+                     python-requests,
+                     python-six,
+                     python-sphinxcontrib.httpdomain,
+                     python-sqlalchemy,
+                     python-sqlalchemy-utils,
+                     python-stevedore,
+                     python-swiftclient,
+                     python-sysv-ipc,
+                     python-tempest-lib (>= 0.2.0),
+                     python-testscenarios,
+                     python-testtools (>= 0.9.38),
+                     python-tooz (>= 0.4),
+                     python-trollius,
+                     python-voluptuous,
+                     python-webtest (>= 2.0.16),
+                     python-werkzeug,
+                     python-yaml,
+                     subunit (>= 0.0.18),
+                     testrepository,
+Standards-Version: 3.9.6
+Vcs-Browser: http://anonscm.debian.org/gitweb/?p=openstack/python-gnocchi.git
+Vcs-Git: git://anonscm.debian.org/openstack/python-gnocchi.git
+Homepage: https://github.com/stackforge/gnocchi
+
+Package: python-gnocchi
+Architecture: all
+Pre-Depends: dpkg (>= 1.15.6~)
+Depends: python-concurrent.futures (>= 2.1.6),
+         python-flask,
+         python-future,
+         python-jinja2,
+         python-msgpack,
+         python-numpy,
+         python-oslo.config (>= 1.4.1),
+         python-oslo.db (>= 0.5.0),
+         python-oslo.log,
+         python-oslo.policy (>= 0.3.0),
+         python-oslo.serialization (>= 1.0.0),
+         python-oslo.utils (>= 0.3.0),
+         python-oslosphinx (>= 2.2.0.0),
+         python-pandas,
+         python-pecan,
+         python-pytimeparse,
+         python-requests,
+         python-six,
+         python-sqlalchemy,
+         python-sqlalchemy-utils,
+         python-stevedore,
+         python-swiftclient,
+         python-sysv-ipc,
+         python-tooz (>= 0.4),
+         python-trollius,
+         python-voluptuous,
+         python-werkzeug,
+         python-yaml,
+         ${misc:Depends},
+         ${python:Depends},
+Suggests: python-gnocchi-doc
+Description: Metric as a Service - Python 2.x
+ HTTP API to store metrics and index resources.
+ .
+ This package contains the Python 2.x module.
+
+Package: python-gnocchi-doc
+Section: doc
+Architecture: all
+Pre-Depends: dpkg (>= 1.15.6~)
+Depends: ${misc:Depends}, ${sphinxdoc:Depends}
+Description: Metric as a Service - doc
+ HTTP API to store metrics and index resources.
+ .
+ This package contains the documentation.
