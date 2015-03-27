@@ -39,7 +39,7 @@ ifeq (,$(findstring nocheck, $(DEB_BUILD_OPTIONS)))
 endif
 
 override_dh_sphinxdoc:
-	sphinx-build -b html doc/source debian/python-gnocchi-doc/usr/share/doc/python-gnocchi-doc/html
+	PYTHONPATH=. sphinx-build -b html doc/source debian/python-gnocchi-doc/usr/share/doc/python-gnocchi-doc/html
 	dh_sphinxdoc -O--buildsystem=python_distutils
 
 override_dh_clean:
