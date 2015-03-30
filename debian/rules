@@ -7,7 +7,7 @@ UPSTREAM_GIT = git://github.com/stackforge/gnocchi.git
 include /usr/share/openstack-pkg-tools/pkgos.make
 
 export OSLO_PACKAGE_VERSION=$(VERSION)
-UNIT_TEST_BLACKLIST = test_carbonara.CarbonaraCmd.*|test_gabbi_resource_list_instance_resources.test_request.*
+UNIT_TEST_BLACKLIST = test_carbonara.CarbonaraCmd.*
 
 %:
 	dh $@ --buildsystem=python_distutils --with python2,python3,sphinxdoc
