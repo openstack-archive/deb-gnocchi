@@ -1,0 +1,16 @@
+#!/bin/sh
+
+set -e
+
+#PKGOS-INCLUDE#
+
+if [ "$1" = "configure" ] || [ "$1" = "reconfigure" ] ; then
+	pkgos_var_user_group gnocchi
+
+	pkgos_write_new_conf gnocchi gnocchi.conf
+	pkgos_write_new_conf gnocchi policy.json
+fi
+
+#DEBHELPER#
+
+exit 0

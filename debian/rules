@@ -23,6 +23,18 @@ override_dh_install:
 #	done
 	rm -rf $(CURDIR)/debian/python*-gnocchi/usr/lib/python*/dist-packages/*.pth
 
+override_dh_auto_build:
+	dh_auto_build -O--buildsystem=python_distutils
+	mkdir -p $(CURDIR)/debian/gnocchi-common/usr/share/gnocchi-common
+	oslo-config-generator --output-file $(CURDIR)/debian/gnocchi-common/usr/share/gnocchi-common/gnocchi.conf \
+		--wrap-width 140 \
+		--namespace gnocchi \
+		--namespace oslo.db \
+		--namespace oslo.log \
+		--namespace oslo.policy \
+		--namespace keystonemiddleware.auth_token
+
+
 override_dh_auto_test:
 ifeq (,$(findstring nocheck, $(DEB_BUILD_OPTIONS)))
 	@echo "===> Running tests"
@@ -75,4 +87,3 @@ override_dh_installpam override_dh_installppp override_dh_installudev override_d
 override_dh_installxfonts override_dh_gconf override_dh_icons override_dh_perl override_dh_usrlocal:
 override_dh_installcron override_dh_installdebconf:
 override_dh_installlogrotate override_dh_installgsettings:
-
