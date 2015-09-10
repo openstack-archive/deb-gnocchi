@@ -77,11 +77,40 @@
       "archive_policy_name": "low"
     }
 
+- name: create-archive-policy-rule
+  request: |
+    POST /v1/archive_policy_rule HTTP/1.1
+    Content-Type: application/json
+
+    {
+      "name": "test_rule",
+      "metric_pattern": "disk.io.*",
+      "archive_policy_name": "low"
+    }
+
+- name: get-archive-policy-rule
+  request: GET /v1/archive_policy_rule/{{ scenarios['create-archive-policy-rule']['response'].json['name'] }} HTTP/1.1
+
+- name: list-archive-policy-rule
+  request: GET /v1/archive_policy_rule HTTP/1.1
+
+- name: create-archive-policy-rule-to-delete
+  request: |
+    POST /v1/archive_policy_rule HTTP/1.1
+    Content-Type: application/json
+
+    {
+      "name": "test_rule_delete",
+      "metric_pattern": "disk.io.*",
+      "archive_policy_name": "low"
+    }
+
+- name: delete-archive-policy-rule
+  request: DELETE /v1/archive_policy_rule/{{ scenarios['create-archive-policy-rule-to-delete']['response'].json['name'] }} HTTP/1.1
+
+
 - name: get-metric
   request: GET /v1/metric/{{ scenarios['create-metric']['response'].json['id'] }} HTTP/1.1
-
-- name: get-metric-details
-  request: GET /v1/metric/{{ scenarios['create-metric']['response'].json['id'] }}?details=true HTTP/1.1
 
 - name: list-metric
   request: GET /v1/metric HTTP/1.1
@@ -111,6 +140,13 @@
       }
     ]
 
+- name: search-value-in-metric
+  request: |
+    POST /v1/search/metric?metric_id={{ scenarios['create-metric']['response'].json['id'] }} HTTP/1.1
+    Content-Type: application/json
+
+    {"and": [{">=": [{"+": 23}, 50]}, {"!=": 55}]}
+
 - name: get-measures
   request: GET /v1/metric/{{ scenarios['create-metric']['response'].json['id'] }}/measures HTTP/1.1
 
@@ -131,6 +167,18 @@
       "project_id": "BD3A1E52-1C62-44CB-BF04-660BD88CD74D"
     }
 
+- name: create-resource-with-new-metrics
+  request: |
+    POST /v1/resource/generic HTTP/1.1
+    Content-Type: application/json
+
+    {
+      "id": "AB68DA77-FA82-4E67-ABA9-270C5A98CBCB",
+      "user_id": "BD3A1E52-1C62-44CB-BF04-660BD88CD74D",
+      "project_id": "BD3A1E52-1C62-44CB-BF04-660BD88CD74D",
+      "metrics": {"temperature": {"archive_policy_name": "low"}}
+    }
+
 - name: create-resource-instance
   request: |
     POST /v1/resource/instance HTTP/1.1
@@ -140,7 +188,9 @@
       "id": "6868DA77-FA82-4E67-ABA9-270C5AE8CBCA",
       "user_id": "BD3A1E52-1C62-44CB-BF04-660BD88CD74D",
       "project_id": "BD3A1E52-1C62-44CB-BF04-660BD88CD74D",
-      "flavor_id": 2,
+      "started_at": "2014-01-02 23:23:34",
+      "ended_at": "2014-01-04 10:00:12",
+      "flavor_id": "2",
       "image_ref": "http://image",
       "host": "compute1",
       "display_name": "myvm",
@@ -180,8 +230,34 @@
       {">=": {"started_at": "2010-01-01"}}
     ]}
 
+- name: search-resource-lifespan
+  request: |
+    POST /v1/search/resource/instance HTTP/1.1
+    Content-Type: application/json
+
+    {">=": {"lifespan": "30 min"}}
+
 - name: get-resource-generic
   request: GET /v1/resource/generic/{{ scenarios['create-resource-generic']['response'].json['id'] }} HTTP/1.1
+
+- name: get-instance
+  request: GET /v1/resource/instance/{{ scenarios['create-resource-instance']['response'].json['id'] }} HTTP/1.1
+
+- name: create-resource-instance-bis
+  request: |
+    POST /v1/resource/instance HTTP/1.1
+    Content-Type: application/json
+
+    {
+      "id": "AB0B5802-E79B-4C84-8998-9237F60D9CAE",
+      "user_id": "BD3A1E52-1C62-44CB-BF04-660BD88CD74D",
+      "project_id": "BD3A1E52-1C62-44CB-BF04-660BD88CD74D",
+      "flavor_id": "2",
+      "image_ref": "http://image",
+      "host": "compute1",
+      "display_name": "myvm",
+      "metrics": {}
+    }
 
 - name: patch-resource
   request: |
@@ -189,6 +265,37 @@
     Content-Type: application/json
 
     {"host": "compute2"}
+
+- name: get-patched-instance
+  request: GET /v1/resource/instance/{{ scenarios['create-resource-instance']['response'].json['id'] }} HTTP/1.1
+
+- name: search-resource-history
+  request: |
+    POST /v1/search/resource/instance?history=true HTTP/1.1
+    Content-Type: application/json
+
+    {"=": {"id": "{{ scenarios['create-resource-instance']['response'].json['id'] }}"}}
+
+- name: search-resource-history-in-accept
+  request: |
+    POST /v1/search/resource/instance HTTP/1.1
+    Content-Type: application/json
+    Accept: application/json; history=true
+
+    {"=": {"id": "{{ scenarios['create-resource-instance']['response'].json['id'] }}"}}
+
+- name: search-resource-history-partial
+  request: |
+    POST /v1/search/resource/instance HTTP/1.1
+    Content-Type: application/json
+    Accept: application/json; history=true
+
+    {"and": [
+        {"=": {"host": "compute1"}},
+        {">=": {"revision_start": "{{ scenarios['get-instance']['response'].json['revision_start'] }}"}},
+        {"or": [{"<=": {"revision_end": "{{ scenarios['get-patched-instance']['response'].json['revision_start'] }}"}},
+            {"=": {"revision_end": null}}]}
+    ]}
 
 - name: delete-resource-generic
   request: DELETE /v1/resource/generic/{{ scenarios['create-resource-generic']['response'].json['id'] }} HTTP/1.1
@@ -202,7 +309,7 @@
       "id": "6F24EDD9-5A2F-4592-B708-FFBED821C5D2",
       "user_id": "BD3A1E52-1C62-44CB-BF04-660BD88CD74D",
       "project_id": "BD3A1E52-1C62-44CB-BF04-660BD88CD74D",
-      "flavor_id": 2,
+      "flavor_id": "2",
       "image_ref": "http://image",
       "host": "compute1",
       "display_name": "myvm2",
@@ -219,7 +326,7 @@
       "id": "15e9c872-7ca9-11e4-a2da-2fb4032dfc09",
       "user_id": "BD3A1E52-1C62-44CB-BF04-660BD88CD74D",
       "project_id": "BD3A1E52-1C62-44CB-BF04-660BD88CD74D",
-      "flavor_id": 2,
+      "flavor_id": "2",
       "image_ref": "http://image",
       "host": "compute1",
       "display_name": "myvm2",

@@ -13,25 +13,21 @@
 # WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 # License for the specific language governing permissions and limitations
 # under the License.
-
 import os
-import uuid
 
-from flask import json as flask_json
 import keystonemiddleware.auth_token
-from oslo.utils import importutils
 from oslo_log import log
 from oslo_policy import policy
-from oslo_serialization import jsonutils
+from oslo_utils import importutils
 import pecan
 from pecan import templating
-import six
 import webob.exc
 from werkzeug import serving
 from werkzeug import wsgi
 
 from gnocchi import exceptions
 from gnocchi import indexer
+from gnocchi import json
 from gnocchi import service
 from gnocchi import storage
 
@@ -56,25 +52,18 @@ class GnocchiHook(pecan.hooks.PecanHook):
 
 class OsloJSONRenderer(object):
     @staticmethod
-    def __init__(path, extra_vars):
+    def __init__(*args, **kwargs):
         pass
 
     @staticmethod
-    def to_primitive(value, *args, **kwargs):
-        # TODO(jd): Remove that once oslo.serialization is released with
-        # https://review.openstack.org/#/c/147198/
-        if isinstance(value, uuid.UUID):
-            return six.text_type(value)
-        return jsonutils.to_primitive(value, *args, **kwargs)
-
-    def render(self, template_path, namespace):
-        return jsonutils.dumps(namespace, default=self.to_primitive)
+    def render(template_path, namespace):
+        return json.dumps(namespace)
 
 
 class GnocchiJinjaRenderer(templating.JinjaRenderer):
     def __init__(self, *args, **kwargs):
         super(GnocchiJinjaRenderer, self).__init__(*args, **kwargs)
-        self.env.filters['tojson'] = flask_json.tojson_filter
+        self.env.filters['tojson'] = json.dumps
 
     def render(self, template_path, namespace):
         namespace = dict(data=namespace)
@@ -113,7 +102,7 @@ def setup_app(config=PECAN_CONFIG, cfg=None):
     i = config.get('indexer')
     if not i:
         i = indexer.get_driver(cfg)
-    i.connect()
+        i.connect()
 
     root_dir = os.path.dirname(os.path.abspath(__file__))
 

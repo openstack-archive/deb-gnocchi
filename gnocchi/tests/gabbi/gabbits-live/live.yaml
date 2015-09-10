@@ -1,0 +1,56 @@
+#
+# Confirmation tests to run against a live web server.
+#
+# These act as a very basic sanity check.
+
+defaults:
+    request_headers:
+        x-auth-token: $ENVIRON['GNOCCHI_SERVICE_TOKEN']
+
+tests:
+
+    - name: check /
+      url: /
+
+    - name: check archive policies
+      url: /v1/archive_policy
+      response_headers:
+          content-type: /application/json/
+      response_strings:
+          - '{"definition": [{"points": 86400, "timespan": "1 day, 0:00:00", "granularity": "0:00:01"}, {"points": 43200, "timespan": "30 days, 0:00:00", "granularity": "0:01:00"}, {"points": 8760, "timespan": "365 days, 0:00:00", "granularity": "1:00:00"}], "back_window": 0, "name": "high", "aggregation_methods": ["std", "count", "95pct", "min", "max", "sum", "median", "mean"]}'
+          - '{"definition": [{"points": 12, "timespan": "1:00:00", "granularity": "0:05:00"}, {"points": 24, "timespan": "1 day, 0:00:00", "granularity": "1:00:00"}, {"points": 30, "timespan": "30 days, 0:00:00", "granularity": "1 day, 0:00:00"}], "back_window": 0, "name": "low", "aggregation_methods": ["std", "count", "95pct", "min", "max", "sum", "median", "mean"]}'
+          - '{"definition": [{"points": 60, "timespan": "1:00:00", "granularity": "0:01:00"}, {"points": 168, "timespan": "7 days, 0:00:00", "granularity": "1:00:00"}, {"points": 365, "timespan": "365 days, 0:00:00", "granularity": "1 day, 0:00:00"}], "back_window": 0, "name": "medium", "aggregation_methods": ["std", "count", "95pct", "min", "max", "sum", "median", "mean"]}'
+
+    - name: check generic resources
+      url: /v1/resource/generic
+      response_headers:
+          content-type: /application/json/
+      response_strings:
+          - "[]"
+
+    - name: post unicode archive policy
+      url: /v1/archive_policy
+      method: POST
+      request_headers:
+          content-type: application/json
+          x-roles: admin
+      data:
+          name: ✔éñ☃
+          definition:
+              - granularity: 1 minute
+                points: 20
+      status: 201
+      response_headers:
+          location: $SCHEME://$NETLOC/v1/archive_policy/%E2%9C%94%C3%A9%C3%B1%E2%98%83
+      response_json_paths:
+          name: ✔éñ☃
+
+    - name: get unicode archive policy
+      url:  $LOCATION
+      response_json_paths:
+          $.name: ✔éñ☃
+
+    - name: delete unicode archive policy
+      url: /v1/archive_policy/%E2%9C%94%C3%A9%C3%B1%E2%98%83
+      method: DELETE
+      status: 204

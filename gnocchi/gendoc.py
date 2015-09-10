@@ -13,6 +13,7 @@
 # WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 # License for the specific language governing permissions and limitations
 # under the License.
+from __future__ import absolute_import
 import json
 
 import jinja2
@@ -30,7 +31,6 @@ _RUN = False
 
 def _setup_test_app():
     t = test_rest.RestTest()
-    t.storage_engine = 'file'
     t.skip_archive_policies_creation = True
     t.setUp()
     return t.app
@@ -112,18 +112,11 @@ def setup(app):
     for entry in scenarios:
         template = jinja2.Template(entry['request'])
         fake_file = six.moves.cStringIO()
-        fake_file.write(template.render(scenarios=scenarios))
+        fake_file.write(template.render(scenarios=scenarios).encode('utf-8'))
         fake_file.seek(0)
         request = webapp.RequestClass.from_file(fake_file)
-        # TODO(jd) Fix this lame bug in webob
-        if request.method in ("PATCH"):
-            # Webob has a bug it does not read the body for PATCH, l4m3r
-            clen = request.content_length
-            if clen is None:
-                request.body = fake_file.read()
-            else:
-                request.body = fake_file.read(clen)
-        app.info("Doing request %s: %s" % (entry['name'], str(request)))
+        app.info("Doing request %s: %s" % (entry['name'],
+                                           six.text_type(request)))
         with webapp.use_admin_user():
             response = webapp.request(request)
         entry['response'] = response

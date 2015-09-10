@@ -17,7 +17,7 @@
 STORAGE_DRIVER="$1"
 SQL_DRIVER="$2"
 
-ENABLED_SERVICES="key,gnocchi-api,"
+ENABLED_SERVICES="key,gnocchi-api,gnocchi-metricd"
 ENABLED_SERVICES+="ceilometer-acentral,ceilometer-collector,ceilometer-api,"
 ENABLED_SERVICES+="ceilometer-alarm-notifier,ceilometer-alarm-evaluator,ceilometer-anotification,"
 
@@ -49,6 +49,7 @@ case $SQL_DRIVER in
         ;;
 esac
 
+DEVSTACK_LOCAL_CONFIG+=$'\nexport USE_VENV=True'
 DEVSTACK_LOCAL_CONFIG+=$'\nexport GNOCCHI_USE_KEYSTONE=False'
 export ENABLED_SERVICES
 export DEVSTACK_LOCAL_CONFIG

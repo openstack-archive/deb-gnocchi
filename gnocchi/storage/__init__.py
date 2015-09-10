@@ -13,9 +13,8 @@
 # WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 # License for the specific language governing permissions and limitations
 # under the License.
-import collections
-
-from oslo.config import cfg
+from oslo_config import cfg
+from oslo_utils import timeutils
 from stevedore import driver
 
 from gnocchi import exceptions
@@ -25,30 +24,53 @@ OPTS = [
     cfg.StrOpt('driver',
                default='file',
                help='Storage driver to use'),
+    cfg.IntOpt('metric_processing_delay',
+               default=5,
+               help="How many seconds to wait between "
+               "new metric measure processing"),
 ]
 
 
-Measure = collections.namedtuple('Measure', ['timestamp', 'value'])
+class Measure(object):
+    def __init__(self, timestamp, value):
+        self.timestamp = timeutils.normalize_time(timestamp)
+        self.value = value
+
+    def __iter__(self):
+        """Allow to transform measure to tuple."""
+        yield self.timestamp
+        yield self.value
 
 
 class Metric(object):
-    __slots__ = ['name', 'archive_policy']
-
-    def __init__(self, name, archive_policy):
-        self.name = name
+    def __init__(self, id, archive_policy,
+                 created_by_user_id=None,
+                 created_by_project_id=None,
+                 name=None,
+                 resource_id=None):
+        self.id = id
         self.archive_policy = archive_policy
-
-    def __eq__(self, other):
-        return isinstance(other, self.__class__) and other.name == self.name
+        self.created_by_user_id = created_by_user_id
+        self.created_by_project_id = created_by_project_id
+        self.name = name
+        self.resource_id = resource_id
 
     def __repr__(self):
-        return '<%s %s>' % (self.__class__.__name__, self.name)
+        return '<%s %s>' % (self.__class__.__name__, self.id)
 
     def __str__(self):
-        return self.name
+        return str(self.id)
 
-    def __hash__(self):
-        return id(self)
+    def __eq__(self, other):
+        return (isinstance(self, Metric)
+                and self.id == other.id
+                and self.archive_policy == other.archive_policy
+                and self.created_by_user_id == other.created_by_user_id
+                and self.created_by_project_id == other.created_by_project_id
+                and self.name == other.name
+                and self.resource_id == other.resource_id)
+
+    __hash__ = object.__hash__
 
 
 class InvalidQuery(Exception):
@@ -84,16 +106,6 @@ class MetricAlreadyExists(Exception):
             "Metric %s already exists" % metric)
 
 
-class NoDeloreanAvailable(Exception):
-    """Error raised when trying to insert a value that is too old."""
-
-    def __init__(self, first_timestamp, bad_timestamp):
-        self.first_timestamp = first_timestamp
-        self.bad_timestamp = bad_timestamp
-        super(NoDeloreanAvailable, self).__init__(
-            "%s is before %s" % (bad_timestamp, first_timestamp))
-
-
 class MetricUnaggregatable(Exception):
     """Error raised when metrics can't be aggregated."""
 
@@ -102,7 +114,7 @@ class MetricUnaggregatable(Exception):
         self.reason = reason
         super(MetricUnaggregatable, self).__init__(
             "Metrics %s can't be aggregated: %s"
-            % (" ,".join((m.name for m in metrics)), reason))
+            % (" ,".join((str(m.id) for m in metrics)), reason))
 
 
 def _get_driver(name, conf):
@@ -128,6 +140,10 @@ class StorageDriver(object):
         pass
 
     @staticmethod
+    def stop():
+        pass
+
+    @staticmethod
     def create_metric(metric):
         """Create a metric.
 
@@ -143,6 +159,14 @@ class StorageDriver(object):
         :param measures: The actual measures.
         """
         raise exceptions.NotImplementedError
+
+    @staticmethod
+    def process_measures(indexer=None):
+        """Process added measures in background.
+
+        Some drivers might need to have a background task running that process
+        the measures sent to metrics. This is used for that.
+        """
 
     @staticmethod
     def get_measures(metric, from_timestamp=None, to_timestamp=None,
@@ -174,12 +198,13 @@ class StorageDriver(object):
         raise exceptions.NotImplementedError
 
     @staticmethod
-    def search_value(metrics, predicate, from_timestamp=None,
+    def search_value(metrics, query, from_timestamp=None,
                      to_timestamp=None,
                      aggregation='mean'):
         """Search for an aggregated value that realizes a predicate.
 
         :param metrics: The list of metrics to look into.
+        :param query: The query being sent.
         :param from_timestamp: The timestamp to get the measure from.
         :param to_timestamp: The timestamp to get the measure to.
         :param aggregation: The type of aggregation to retrieve.

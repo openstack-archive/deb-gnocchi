@@ -23,7 +23,6 @@ from oslotest import mockpatch
 import six
 from stevedore import extension
 from swiftclient import exceptions as swexc
-import testscenarios
 from testtools import testcase
 from tooz import coordination
 
@@ -59,8 +58,9 @@ class FakeRadosModule(object):
         pass
 
     class ioctx(object):
-        def __init__(self, kvs):
+        def __init__(self, kvs, kvs_xattrs):
             self.kvs = kvs
+            self.kvs_xattrs = kvs_xattrs
             self.librados = self
             self.io = self
 
@@ -71,21 +71,24 @@ class FakeRadosModule(object):
         def __exit__(exc_type, exc_value, traceback):
             pass
 
+        def _ensure_key_exists(self, key):
+            if key not in self.kvs:
+                self.kvs[key] = ""
+                self.kvs_xattrs[key] = {}
+
         def rados_lock_exclusive(self, ctx, name, lock, locker, desc, timeval,
                                  flags):
             # Locking a not existing object create an empty one
             # so, do the same in test
             key = name.value.decode('ascii')
-            if key not in self.kvs:
-                self.kvs[key] = ""
+            self._ensure_key_exists(key)
             return 0
 
         def rados_unlock(self, ctx, name, lock, locker):
             # Locking a not existing object create an empty one
             # so, do the same in test
             key = name.value.decode('ascii')
-            if key not in self.kvs:
-                self.kvs[key] = ""
+            self._ensure_key_exists(key)
             return 0
 
         @staticmethod
@@ -99,6 +102,7 @@ class FakeRadosModule(object):
 
         def write_full(self, key, value):
             self._validate_key(key)
+            self._ensure_key_exists(key)
             self.kvs[key] = value
 
         def stat(self, key):
@@ -115,15 +119,33 @@ class FakeRadosModule(object):
             else:
                 return self.kvs[key][offset:offset+length]
 
+        def get_xattrs(self, key):
+            if key not in self.kvs:
+                raise FakeRadosModule.ObjectNotFound
+            return iter((k, v) for k, v in
+                        self.kvs_xattrs.get(key, {}).items())
+
+        def set_xattr(self, key, attr, value):
+            self._ensure_key_exists(key)
+            xattrs = self.kvs_xattrs.setdefault(key, {})
+            xattrs[attr] = value
+
+        def rm_xattr(self, key, attr):
+            if key not in self.kvs:
+                raise FakeRadosModule.ObjectNotFound
+            del self.kvs_xattrs[key][attr]
+
         def remove_object(self, key):
             self._validate_key(key)
             if key not in self.kvs:
                 raise FakeRadosModule.ObjectNotFound
             del self.kvs[key]
+            del self.kvs_xattrs[key]
 
     class FakeRados(object):
-        def __init__(self, kvs):
+        def __init__(self, kvs, kvs_xattrs):
             self.kvs = kvs
+            self.kvs_xattrs = kvs_xattrs
 
         @staticmethod
         def connect():
@@ -134,13 +156,14 @@ class FakeRadosModule(object):
             pass
 
         def open_ioctx(self, pool):
-            return FakeRadosModule.ioctx(self.kvs)
+            return FakeRadosModule.ioctx(self.kvs, self.kvs_xattrs)
 
     def __init__(self):
         self.kvs = {}
+        self.kvs_xattrs = {}
 
     def Rados(self, *args, **kwargs):
-        return FakeRadosModule.FakeRados(self.kvs)
+        return FakeRadosModule.FakeRados(self.kvs, self.kvs_xattrs)
 
     @staticmethod
     def run_in_thread(method, args):
@@ -163,12 +186,44 @@ class FakeSwiftClient(object):
                 response_dict['status'] = 201
         self.kvs[container] = {}
 
+    def get_container(self, container, delimiter=None,
+                      path=None):
+        try:
+            container = self.kvs[container]
+        except KeyError:
+            raise swexc.ClientException("No such container",
+                                        http_status=404)
+
+        files = []
+        directories = set()
+        for k, v in six.iteritems(container):
+            if path and not k.startswith(path):
+                continue
+
+            if delimiter is not None and delimiter in k:
+                dirname = k.split(delimiter, 1)[0]
+                if dirname not in directories:
+                    directories.add(dirname)
+                    files.append({'subdir': dirname + delimiter})
+            else:
+                files.append({'bytes': len(v),
+                              'last_modified': None,
+                              'hash': None,
+                              'name': k,
+                              'content_type': None})
+
+        return {}, files + list(directories)
+
     def put_object(self, container, key, obj):
         if hasattr(obj, "seek"):
             obj.seek(0)
             obj = obj.read()
             # TODO(jd) Maybe we should reset the seek(), but well…
-        self.kvs[container][key] = obj
+        try:
+            self.kvs[container][key] = obj
+        except KeyError:
+            raise swexc.ClientException("No such container",
+                                        http_status=404)
 
     def get_object(self, container, key):
         try:
@@ -197,7 +252,7 @@ class FakeSwiftClient(object):
 
 
 @six.add_metaclass(SkipNotImplementedMeta)
-class TestCase(base.BaseTestCase, testscenarios.TestWithScenarios):
+class TestCase(base.BaseTestCase):
 
     ARCHIVE_POLICIES = {
         'low': archive_policy.ArchivePolicy(
@@ -256,13 +311,6 @@ class TestCase(base.BaseTestCase, testscenarios.TestWithScenarios):
         ),
     }
 
-    scenarios = [
-        ('null', dict(storage_engine='null')),
-        ('swift', dict(storage_engine='swift')),
-        ('file', dict(storage_engine='file')),
-        ('ceph', dict(storage_engine='ceph')),
-    ]
-
     @staticmethod
     def path_get(project_file=None):
         root = os.path.abspath(os.path.join(os.path.dirname(__file__),
@@ -296,14 +344,23 @@ class TestCase(base.BaseTestCase, testscenarios.TestWithScenarios):
         # NOTE(jd) So, some driver, at least SQLAlchemy, can't create all
         # their tables in a single transaction even with the
         # checkfirst=True, so what we do here is we force the upgrade code
-        # path to be sequential to avoid race conditions as the tests run in
-        # parallel.
+        # path to be sequential to avoid race conditions as the tests run
+        # in parallel.
         self.coord = coordination.get_coordinator(
             os.getenv("GNOCCHI_COORDINATION_URL", "ipc://"),
             str(uuid.uuid4()).encode('ascii'))
 
+        self.coord.start()
+
         with self.coord.get_lock(b"gnocchi-tests-db-lock"):
-            self.index.upgrade()
+            # Force upgrading using Alembic rather than creating the
+            # database from scratch so we are sure we don't miss anything
+            # in the Alembic upgrades. We have a test to check that
+            # upgrades == create but it misses things such as custom CHECK
+            # constraints.
+            self.index.upgrade(nocreate=True)
+
+        self.coord.stop()
 
         self.archive_policies = self.ARCHIVE_POLICIES
         # Used in gnocchi.gendoc
@@ -322,13 +379,17 @@ class TestCase(base.BaseTestCase, testscenarios.TestWithScenarios):
         self.useFixture(mockpatch.Patch('gnocchi.storage.ceph.rados',
                                         FakeRadosModule()))
 
-        if self.storage_engine == 'file':
+        self.conf.set_override(
+            'driver',
+            os.getenv("GNOCCHI_TEST_STORAGE_DRIVER", "null"),
+            'storage')
+
+        if self.conf.storage.driver == 'file':
             tempdir = self.useFixture(fixtures.TempDir())
             self.conf.set_override('file_basepath',
                                    tempdir.path,
                                    'storage')
 
-        self.conf.set_override('driver', self.storage_engine, 'storage')
         self.storage = storage.get_driver(self.conf)
 
         self.mgr = extension.ExtensionManager('gnocchi.aggregates',
@@ -337,4 +398,5 @@ class TestCase(base.BaseTestCase, testscenarios.TestWithScenarios):
 
     def tearDown(self):
         self.index.disconnect()
+        self.storage.stop()
         super(TestCase, self).tearDown()

@@ -1,8 +1,6 @@
 # -*- encoding: utf-8 -*-
 #
-# Copyright © 2014 eNovance
-#
-# Authors: Julien Danjou <julien@danjou.info>
+# Copyright © 2014-2015 eNovance
 #
 # Licensed under the Apache License, Version 2.0 (the "License"); you may
 # not use this file except in compliance with the License. You may obtain
@@ -15,7 +13,13 @@
 # WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 # License for the specific language governing permissions and limitations
 # under the License.
-from oslo.config import cfg
+import contextlib
+import datetime
+import uuid
+
+from oslo_config import cfg
+import retrying
+import six
 from swiftclient import client as swclient
 
 from gnocchi import storage
@@ -33,17 +37,26 @@ OPTS = [
                default="http://localhost:8080/auth/v1.0",
                help='Swift auth URL.'),
     cfg.StrOpt('swift_preauthtoken',
+               secret=True,
                default=None,
                help='Swift token to user to authenticate.'),
     cfg.StrOpt('swift_user',
                default="admin:admin",
                help='Swift user.'),
     cfg.StrOpt('swift_key',
+               secret=True,
                default="admin",
                help='Swift key/password.'),
     cfg.StrOpt('swift_tenant_name',
                help='Swift tenant name, only used in v2 auth.'),
+    cfg.StrOpt('swift_container_prefix',
+               default='gnocchi',
+               help='Prefix to namespace metric containers.'),
 ]
+
+
+def retry_if_result_empty(result):
+    return len(result) == 0
 
 
 class SwiftStorage(_carbonara.CarbonaraBasedStorage):
@@ -57,41 +70,84 @@ class SwiftStorage(_carbonara.CarbonaraBasedStorage):
             key=conf.swift_key,
             tenant_name=conf.swift_tenant_name)
         self._lock = _carbonara.CarbonaraBasedStorageToozLock(conf)
+        self._container_prefix = conf.swift_container_prefix
+        self.swift.put_container(self.MEASURE_PREFIX)
+
+    def stop(self):
+        self._lock.stop()
+
+    def _container_name(self, metric):
+        return '%s.%s' % (self._container_prefix, str(metric.id))
 
     def _create_metric_container(self, metric):
         # TODO(jd) A container per user in their account?
         resp = {}
-        self.swift.put_container(metric.name, response_dict=resp)
+        self.swift.put_container(self._container_name(metric),
+                                 response_dict=resp)
         # put_container() should return 201 Created; if it returns 204, that
         # means the metric was already created!
         if resp['status'] == 204:
             raise storage.MetricAlreadyExists(metric)
 
+    def _store_measures(self, metric, data):
+        now = datetime.datetime.utcnow().strftime("_%Y%M%d_%H:%M:%S")
+        self.swift.put_object(
+            self.MEASURE_PREFIX,
+            six.text_type(metric.id) + "/" + six.text_type(uuid.uuid4()) + now,
+            data)
+
+    def _list_metric_with_measures_to_process(self):
+        headers, files = self.swift.get_container(self.MEASURE_PREFIX,
+                                                  delimiter='/')
+        return set(f['subdir'][:-1] for f in files if 'subdir' in f)
+
+    @contextlib.contextmanager
+    def _process_measure_for_metric(self, metric):
+        headers, files = self.swift.get_container(
+            self.MEASURE_PREFIX, path=six.text_type(metric.id))
+
+        measures = []
+        for f in files:
+            headers, data = self.swift.get_object(
+                self.MEASURE_PREFIX, f['name'])
+            measures.extend(self._unserialize_measures(data))
+
+        yield measures
+
+        # Now clean objects
+        for f in files:
+            self.swift.delete_object(self.MEASURE_PREFIX, f['name'])
+
     def _store_metric_measures(self, metric, aggregation, data):
-        self.swift.put_object(metric.name, aggregation, data)
+        self.swift.put_object(self._container_name(metric), aggregation, data)
 
     def delete_metric(self, metric):
         try:
             for aggregation in metric.archive_policy.aggregation_methods:
                 try:
-                    self.swift.delete_object(metric.name, aggregation)
+                    self.swift.delete_object(self._container_name(metric),
+                                             aggregation)
                 except swclient.ClientException as e:
                     if e.http_status != 404:
                         raise
 
-            self.swift.delete_container(metric.name)
+            self.swift.delete_container(self._container_name(metric))
         except swclient.ClientException as e:
             if e.http_status == 404:
                 raise storage.MetricDoesNotExist(metric)
             raise
 
+    @retrying.retry(stop_max_attempt_number=4,
+                    wait_fixed=500,
+                    retry_on_result=retry_if_result_empty)
     def _get_measures(self, metric, aggregation):
         try:
-            headers, contents = self.swift.get_object(metric.name, aggregation)
+            headers, contents = self.swift.get_object(
+                self._container_name(metric), aggregation)
         except swclient.ClientException as e:
             if e.http_status == 404:
                 try:
-                    self.swift.head_container(metric.name)
+                    self.swift.head_container(self._container_name(metric))
                 except swclient.ClientException as e:
                     if e.http_status == 404:
                         raise storage.MetricDoesNotExist(metric)

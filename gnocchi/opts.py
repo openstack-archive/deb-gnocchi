@@ -16,7 +16,6 @@
 import itertools
 
 from oslo_config import cfg
-from oslo_config import types
 
 import gnocchi.archive_policy
 import gnocchi.indexer
@@ -29,6 +28,11 @@ import gnocchi.storage.swift
 def list_opts():
     return [
         ("indexer", gnocchi.indexer.OPTS),
+        ("metricd", (
+            cfg.IntOpt('workers', min=1,
+                       help='Number of workers for Gnocchi metric daemons. '
+                       'By default the available number of CPU is used.'),
+        )),
         ("api", (
             cfg.IntOpt('port',
                        default=8041,
@@ -43,9 +47,13 @@ def list_opts():
                 'middlewares',
                 default=['keystonemiddleware.auth_token.AuthProtocol'],
                 help='Middlewares to use',),
-            cfg.Opt('workers', type=types.Integer(min=1),
-                    help='Number of workers for Gnocchi API server. '
-                    'By default the available number of CPU is used.'),
+            cfg.IntOpt('workers', min=1,
+                       help='Number of workers for Gnocchi API server. '
+                       'By default the available number of CPU is used.'),
+            cfg.IntOpt('max_limit',
+                       default=1000,
+                       help=('The maximum number of items returned in a '
+                             'single response from a collection resource')),
         )),
         ("storage", itertools.chain(gnocchi.storage._carbonara.OPTS,
                                     gnocchi.storage.OPTS,
@@ -65,6 +73,9 @@ def list_opts():
             cfg.StrOpt(
                 'archive_policy_name',
                 help='Archive policy name to use when creating metrics'),
+            cfg.FloatOpt(
+                'flush_delay',
+                help='Delay between flushes'),
         )),
         ("archive_policy", gnocchi.archive_policy.OPTS),
     ]

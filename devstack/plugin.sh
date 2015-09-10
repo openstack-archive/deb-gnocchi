@@ -3,9 +3,11 @@
 
 # To enable Gnocchi service, add the following to localrc:
 #
-#   enable_plugin gnocchi https://github.com/stackforge/gnocchi master
-#   enable_service gnocchi-api
+#   enable_plugin gnocchi https://github.com/openstack/gnocchi master
 #
+# This will turn on both gnocchi-api and gnocchi-metricd services.
+# If you don't want one of those (you do) you can use the
+# disable_service command in local.conf.
 
 # Dependencies:
 #
@@ -29,48 +31,11 @@
 
 # Save trace setting
 XTRACE=$(set +o | grep xtrace)
-set +o xtrace
+set -o xtrace
 
 
 # Defaults
 # --------
-
-# Setup repository
-GNOCCHI_REPO=${GNOCCHI_REPO:-${GIT_BASE}/stackforge/gnocchi.git}
-GNOCCHI_BRANCH=${GNOCCHI_BRANCH:-master}
-
-# Set up default directories
-GNOCCHI_DIR=$DEST/gnocchi
-GNOCCHI_CONF_DIR=/etc/gnocchi
-GNOCCHI_CONF=$GNOCCHI_CONF_DIR/gnocchi.conf
-GNOCCHI_API_LOG_DIR=/var/log/gnocchi-api
-GNOCCHI_AUTH_CACHE_DIR=${GNOCCHI_AUTH_CACHE_DIR:-/var/cache/gnocchi}
-GNOCCHI_WSGI_DIR=${GNOCCHI_WSGI_DIR:-/var/www/gnocchi}
-GNOCCHI_DATA_DIR=${GNOCCHI_DATA_DIR:-${DATA_DIR}/gnocchi}
-GNOCCHI_COORDINATOR_URL=${GNOCCHI_COORDINATOR_URL:-file://${GNOCCHI_DATA_DIR}/locks}
-
-# Toggle for deploying Gnocchi under HTTPD + mod_wsgi
-GNOCCHI_USE_MOD_WSGI=${GNOCCHI_USE_MOD_WSGI:-${ENABLE_HTTPD_MOD_WSGI_SERVICES}}
-
-# Support potential entry-points console scripts
-GNOCCHI_BIN_DIR=$(get_python_exec_prefix)
-
-# Gnocchi connection info.
-GNOCCHI_SERVICE_PROTOCOL=http
-GNOCCHI_SERVICE_HOST=$SERVICE_HOST
-GNOCCHI_SERVICE_PORT=${GNOCCHI_SERVICE_PORT:-8041}
-
-# Gnocchi ceilometer default archive_policy
-GNOCCHI_ARCHIVE_POLICY=${GNOCCHI_ARCHIVE_POLICY:-low}
-
-# ceph gnochi info
-GNOCCHI_CEPH_USER=${GNOCCHI_CEPH_USER:-gnocchi}
-GNOCCHI_CEPH_POOL=${GNOCCHI_CEPH_POOL:-gnocchi}
-GNOCCHI_CEPH_POOL_PG=${GNOCCHI_CEPH_POOL_PG:-8}
-GNOCCHI_CEPH_POOL_PGP=${GNOCCHI_CEPH_POOL_PGP:-8}
-
-# Gnocchi with keystone
-GNOCCHI_USE_KEYSTONE=${GNOCCHI_USE_KEYSTONE:-True}
 
 # Functions
 # ---------
@@ -88,29 +53,54 @@ function is_gnocchi_enabled {
 # -------------------------------------------------------------------------
 # $SERVICE_TENANT_NAME  gnocchi        service
 # gnocchi_swift         gnocchi_swift  ResellerAdmin  (if Swift is enabled)
-create_gnocchi_accounts() {
+function create_gnocchi_accounts {
     # Gnocchi
     if [[ "$ENABLED_SERVICES" =~ "gnocchi-api" ]]; then
-        local gnocchi_user=$(get_or_create_user "gnocchi" \
-            "$SERVICE_PASSWORD" $SERVICE_TENANT_NAME)
-        get_or_add_user_project_role service $gnocchi_user $SERVICE_TENANT_NAME
+        create_service_user "gnocchi"
 
         if [[ "$KEYSTONE_CATALOG_BACKEND" = 'sql' ]]; then
             local gnocchi_service=$(get_or_create_service "gnocchi" \
                 "metric" "OpenStack Metric Service")
             get_or_create_endpoint $gnocchi_service \
                 "$REGION_NAME" \
-                "$GNOCCHI_SERVICE_PROTOCOL://$GNOCCHI_SERVICE_HOST:$GNOCCHI_SERVICE_PORT/" \
-                "$GNOCCHI_SERVICE_PROTOCOL://$GNOCCHI_SERVICE_HOST:$GNOCCHI_SERVICE_PORT/" \
-                "$GNOCCHI_SERVICE_PROTOCOL://$GNOCCHI_SERVICE_HOST:$GNOCCHI_SERVICE_PORT/"
+                "$(gnocchi_service_url)/" \
+                "$(gnocchi_service_url)/" \
+                "$(gnocchi_service_url)/"
         fi
-        if is_service_enabled swift; then
-            get_or_create_project "gnocchi_swift"
+        if is_service_enabled swift && [[ "$GNOCCHI_STORAGE_BACKEND" = 'swift' ]] ; then
+            get_or_create_project "gnocchi_swift" default
             local gnocchi_swift_user=$(get_or_create_user "gnocchi_swift" \
-                "$SERVICE_PASSWORD" "gnocchi_swift@example.com")
+                "$SERVICE_PASSWORD" default "gnocchi_swift@example.com")
             get_or_add_user_project_role "ResellerAdmin" $gnocchi_swift_user "gnocchi_swift"
         fi
     fi
+}
+
+# return the service url for gnocchi
+function gnocchi_service_url {
+    if [[ -n $GNOCCHI_SERVICE_PORT ]]; then
+        echo "$GNOCCHI_SERVICE_PROTOCOL://$GNOCCHI_SERVICE_HOST:$GNOCCHI_SERVICE_PORT"
+    else
+        echo "$GNOCCHI_SERVICE_PROTOCOL://$GNOCCHI_SERVICE_HOST$GNOCCHI_SERVICE_PREFIX"
+    fi
+}
+
+# install redis
+# NOTE(chdent): We shouldn't rely on ceilometer being present so cannot
+# use its install_redis. There are enough packages now using redis
+# that there should probably be something devstack itself for
+# installing it.
+function _gnocchi_install_redis {
+    if is_ubuntu; then
+        install_package redis-server
+        restart_service redis-server
+    else
+        # This will fail (correctly) where a redis package is unavailable
+        install_package redis
+        restart_service redis
+    fi
+
+    pip_install_gr redis
 }
 
 function _cleanup_gnocchi_apache_wsgi {
@@ -118,22 +108,42 @@ function _cleanup_gnocchi_apache_wsgi {
     sudo rm -f $(apache_site_config_for gnocchi)
 }
 
-# _config_gnocchi_apache_wsgi() - Set WSGI config files of Keystone
+# _config_gnocchi_apache_wsgi() - Set WSGI config files of Gnocchi
 function _config_gnocchi_apache_wsgi {
     sudo mkdir -p $GNOCCHI_WSGI_DIR
 
     local gnocchi_apache_conf=$(apache_site_config_for gnocchi)
+    local venv_path=""
+    local script_name=$GNOCCHI_SERVICE_PREFIX
 
-    # copy proxy vhost and wsgi file
+    if [[ ${USE_VENV} = True ]]; then
+        venv_path="python-path=${PROJECT_VENV["gnocchi"]}/lib/$(python_version)/site-packages"
+    fi
+
+    # copy wsgi file
     sudo cp $GNOCCHI_DIR/gnocchi/rest/app.wsgi $GNOCCHI_WSGI_DIR/
 
-    sudo cp $GNOCCHI_DIR/devstack/apache-gnocchi.template $gnocchi_apache_conf
-    sudo sed -e "
-        s|%GNOCCHI_PORT%|$GNOCCHI_SERVICE_PORT|g;
-        s|%APACHE_NAME%|$APACHE_NAME|g;
-        s|%WSGI%|$GNOCCHI_WSGI_DIR/app.wsgi|g;
-        s|%USER%|$STACK_USER|g
-    " -i $gnocchi_apache_conf
+    # Only run the API on a custom PORT if it has been specifically
+    # asked for.
+    if [[ -n $GNOCCHI_SERVICE_PORT ]]; then
+        sudo cp $GNOCCHI_DIR/devstack/apache-ported-gnocchi.template $gnocchi_apache_conf
+        sudo sed -e "
+            s|%GNOCCHI_PORT%|$GNOCCHI_SERVICE_PORT|g;
+            s|%APACHE_NAME%|$APACHE_NAME|g;
+            s|%WSGI%|$GNOCCHI_WSGI_DIR/app.wsgi|g;
+            s|%USER%|$STACK_USER|g
+            s|%VIRTUALENV%|$venv_path|g
+        " -i $gnocchi_apache_conf
+    else
+        sudo cp $GNOCCHI_DIR/devstack/apache-gnocchi.template $gnocchi_apache_conf
+        sudo sed -e "
+            s|%APACHE_NAME%|$APACHE_NAME|g;
+            s|%SCRIPT_NAME%|$script_name|g;
+            s|%WSGI%|$GNOCCHI_WSGI_DIR/app.wsgi|g;
+            s|%USER%|$STACK_USER|g
+            s|%VIRTUALENV%|$venv_path|g
+        " -i $gnocchi_apache_conf
+    fi
 }
 
 
@@ -150,9 +160,6 @@ function cleanup_gnocchi {
 function configure_gnocchi {
     [ ! -d $GNOCCHI_CONF_DIR ] && sudo mkdir -m 755 -p $GNOCCHI_CONF_DIR
     sudo chown $STACK_USER $GNOCCHI_CONF_DIR
-
-    [ ! -d $GNOCCHI_API_LOG_DIR ] &&  sudo mkdir -m 755 -p $GNOCCHI_API_LOG_DIR
-    sudo chown $STACK_USER $GNOCCHI_API_LOG_DIR
 
     [ ! -d $GNOCCHI_DATA_DIR ] && sudo mkdir -m 755 -p $GNOCCHI_DATA_DIR
     sudo chown $STACK_USER $GNOCCHI_DATA_DIR
@@ -177,28 +184,29 @@ function configure_gnocchi {
     configure_auth_token_middleware $GNOCCHI_CONF gnocchi $GNOCCHI_AUTH_CACHE_DIR
 
     # Configure the storage driver
-    if is_service_enabled ceph; then
+    if is_service_enabled ceph && [[ "$GNOCCHI_STORAGE_BACKEND" = 'ceph' ]] ; then
         iniset $GNOCCHI_CONF storage driver ceph
         iniset $GNOCCHI_CONF storage ceph_username ${GNOCCHI_CEPH_USER}
         iniset $GNOCCHI_CONF storage ceph_keyring ${CEPH_CONF_DIR}/ceph.client.${GNOCCHI_CEPH_USER}.keyring
-    elif is_service_enabled swift; then
+    elif is_service_enabled swift && [[ "$GNOCCHI_STORAGE_BACKEND" = 'swift' ]] ; then
         iniset $GNOCCHI_CONF storage driver swift
         iniset $GNOCCHI_CONF storage swift_user gnocchi_swift
         iniset $GNOCCHI_CONF storage swift_key $SERVICE_PASSWORD
         iniset $GNOCCHI_CONF storage swift_tenant_name "gnocchi_swift"
         iniset $GNOCCHI_CONF storage swift_auth_version 2
         iniset $GNOCCHI_CONF storage swift_authurl $KEYSTONE_SERVICE_URI/v2.0/
-    else
+    elif [[ "$GNOCCHI_STORAGE_BACKEND" = 'file' ]] ; then
         iniset $GNOCCHI_CONF storage driver file
         iniset $GNOCCHI_CONF storage file_basepath $GNOCCHI_DATA_DIR/
-    fi
-
-    if [ "$GNOCCHI_STORAGE_BACKEND" ]; then
-        iniset $GNOCCHI_CONF storage driver "$GNOCCHI_STORAGE_BACKEND"
+    else
+        echo "ERROR: could not configure storage driver"
+        exit 1
     fi
 
     if [ "$GNOCCHI_USE_KEYSTONE" != "True" ]; then
         iniset $GNOCCHI_CONF api middlewares ""
+    else
+        inicomment $GNOCCHI_CONF api middlewares
     fi
 
     # Configure the indexer database
@@ -223,14 +231,14 @@ function configure_ceph_gnocchi {
 }
 
 function configure_ceilometer_gnocchi {
-    gnocchi_url=$GNOCCHI_SERVICE_PROTOCOL://$GNOCCHI_SERVICE_HOST:$GNOCCHI_SERVICE_PORT
+    gnocchi_url=$(gnocchi_service_url)
     iniset $CEILOMETER_CONF DEFAULT dispatcher gnocchi
     iniset $CEILOMETER_CONF alarms gnocchi_url $gnocchi_url
     iniset $CEILOMETER_CONF dispatcher_gnocchi url $gnocchi_url
     iniset $CEILOMETER_CONF dispatcher_gnocchi archive_policy ${GNOCCHI_ARCHIVE_POLICY}
-    if is_service_enabled swift; then
+    if is_service_enabled swift && [[ "$GNOCCHI_STORAGE_BACKEND" = 'swift' ]] ; then
         iniset $CEILOMETER_CONF dispatcher_gnocchi filter_service_activity "True"
-        iniset $CEILOMETER_CONF dispatcher_gnocchi filter_user "gnocchi_swift"
+        iniset $CEILOMETER_CONF dispatcher_gnocchi filter_project "gnocchi_swift"
     else
         iniset $CEILOMETER_CONF dispatcher_gnocchi filter_service_activity "False"
     fi
@@ -251,11 +259,13 @@ function init_gnocchi {
 
 # install_gnocchi() - Collect source and prepare
 function install_gnocchi {
-    git_clone $GNOCCHI_REPO $GNOCCHI_DIR $GNOCCHI_BRANCH
+    if [ "${GNOCCHI_COORDINATOR_URL%%:*}" == "redis" ]; then
+        _gnocchi_install_redis
+    fi
 
-    # NOTE(sileht): requirements are not yet merged with the global-requirement repo
+    # NOTE(sileht): requirements are not merged with the global-requirement repo
     # setup_develop $GNOCCHI_DIR
-    setup_package $GNOCCHI_DIR -e
+    USE_CONSTRAINTS=False setup_package $GNOCCHI_DIR -e
 
     if [ "$GNOCCHI_USE_MOD_WSGI" == "True" ]; then
         install_apache_wsgi
@@ -267,32 +277,47 @@ function install_gnocchi {
 function start_gnocchi {
     local token
 
+    run_process gnocchi-metricd "gnocchi-metricd -d -v --config-file $GNOCCHI_CONF"
+
     if [ "$GNOCCHI_USE_MOD_WSGI" == "True" ]; then
         enable_apache_site gnocchi
         restart_apache_server
-        tail_log gnocchi /var/log/$APACHE_NAME/gnocchi.log
-        tail_log gnocchi-api /var/log/$APACHE_NAME/gnocchi-access.log
+        if [[ -n $GNOCCHI_SERVICE_PORT ]]; then
+            tail_log gnocchi /var/log/$APACHE_NAME/gnocchi.log
+            tail_log gnocchi-api /var/log/$APACHE_NAME/gnocchi-access.log
+        else
+            # NOTE(chdent): At the moment this is very noisy as it
+            # will tail the entire apache logs, not just the gnocchi
+            # parts. If you don't like this either USE_SCREEN=False
+            # or set GNOCCHI_SERVICE_PORT.
+            tail_log gnocchi /var/log/$APACHE_NAME/error[._]log
+            tail_log gnocchi-api /var/log/$APACHE_NAME/access[._]log
+        fi
     else
-        run_process gnocchi-api "gnocchi-api -d -v --log-dir=$GNOCCHI_API_LOG_DIR --config-file $GNOCCHI_CONF"
+        run_process gnocchi-api "gnocchi-api -d -v --config-file $GNOCCHI_CONF"
     fi
     # only die on API if it was actually intended to be turned on
     if is_service_enabled gnocchi-api; then
         echo "Waiting for gnocchi-api to start..."
-        if ! timeout $SERVICE_TIMEOUT sh -c "while ! curl --noproxy '*' -s ${GNOCCHI_SERVICE_PROTOCOL}://${GNOCCHI_SERVICE_HOST}:${GNOCCHI_SERVICE_PORT}/v1/resource/generic >/dev/null; do sleep 1; done"; then
+        if ! timeout $SERVICE_TIMEOUT sh -c "while ! curl --noproxy '*' -s $(gnocchi_service_url)/v1/resource/generic >/dev/null; do sleep 1; done"; then
             die $LINENO "gnocchi-api did not start"
         fi
     fi
 
     # Create a default policy
+    archive_policy_url="$(gnocchi_service_url)/v1/archive_policy"
     if [ "$GNOCCHI_USE_KEYSTONE" == "True" ]; then
-        token=$(keystone token-get | grep ' id ' | get_field 2)
-        die_if_not_set $LINENO token "Keystone fail to get token"
-        auth="-H 'X-Auth-Token: $token'"
+        token=$(openstack token issue -f value -c id)
+        create_archive_policy() { curl -X POST -H "X-Auth-Token: $token" -H "Content-Type: application/json" -d "$1" $archive_policy_url ; }
+    else
+        userid=$(openstack user show admin -f value -c id)
+        projectid=$(openstack project show admin -f value -c id)
+        create_archive_policy() { curl -X POST -H "X-ROLES: admin" -H "X-USER-ID: $userid" -H "X-PROJECT-ID: $projectid" -H "Content-Type: application/json" -d "$1" $archive_policy_url ; }
     fi
 
-    curl -X POST $auth ${GNOCCHI_SERVICE_PROTOCOL}://${GNOCCHI_SERVICE_HOST}:${GNOCCHI_SERVICE_PORT}/v1/archive_policy -H "Content-Type: application/json" -d '{"name":"low","definition":[{"granularity": "5m","points": 12},{"granularity": "1h","points": 24},{"granularity": "1d","points": 30}]}'
-    curl -X POST $auth ${GNOCCHI_SERVICE_PROTOCOL}://${GNOCCHI_SERVICE_HOST}:${GNOCCHI_SERVICE_PORT}/v1/archive_policy -H "Content-Type: application/json" -d '{"name":"medium","definition":[{"granularity": "60s","points": 60},{"granularity": "1h","points": 168},{"granularity": "1d","points": 365}]}'
-    curl -X POST $auth ${GNOCCHI_SERVICE_PROTOCOL}://${GNOCCHI_SERVICE_HOST}:${GNOCCHI_SERVICE_PORT}/v1/archive_policy -H "Content-Type: application/json" -d '{"name":"high","definition":[{"granularity": "1s","points": 86400},{"granularity": "1m","points": 43200},{"granularity": "1h","points": 8760}]}'
+    create_archive_policy '{"name":"low","definition":[{"granularity": "5m","points": 12},{"granularity": "1h","points": 24},{"granularity": "1d","points": 30}]}'
+    create_archive_policy '{"name":"medium","definition":[{"granularity": "60s","points": 60},{"granularity": "1h","points": 168},{"granularity": "1d","points": 365}]}'
+    create_archive_policy '{"name":"high","definition":[{"granularity": "1s","points": 86400},{"granularity": "1m","points": 43200},{"granularity": "1h","points": 8760}]}'
 }
 
 # stop_gnocchi() - Stop running processes
@@ -310,26 +335,27 @@ function stop_gnocchi {
 if is_service_enabled gnocchi-api; then
     if [[ "$1" == "stack" && "$2" == "install" ]]; then
         echo_summary "Installing Gnocchi"
-        install_gnocchi
+        stack_install_service gnocchi
     elif [[ "$1" == "stack" && "$2" == "post-config" ]]; then
         echo_summary "Configuring Gnocchi"
         configure_gnocchi
         create_gnocchi_accounts
-    elif [[ "$1" == "stack" && "$2" == "extra" ]]; then
-        echo_summary "Initializing Gnocchi"
         if is_service_enabled ceilometer; then
             echo_summary "Configuring Ceilometer for gnocchi"
             configure_ceilometer_gnocchi
         fi
-        if is_service_enabled ceph; then
+        if is_service_enabled ceph && [[ "$GNOCCHI_STORAGE_BACKEND" = 'ceph' ]] ; then
             echo_summary "Configuring Gnocchi for Ceph"
             configure_ceph_gnocchi
         fi
+    elif [[ "$1" == "stack" && "$2" == "extra" ]]; then
+        echo_summary "Initializing Gnocchi"
         init_gnocchi
         start_gnocchi
     fi
 
     if [[ "$1" == "unstack" ]]; then
+        echo_summary "Stopping Gnocchi"
         stop_gnocchi
     fi
 
@@ -345,5 +371,3 @@ $XTRACE
 ## Local variables:
 ## mode: shell-script
 ## End:
-
-

@@ -1,13 +1,10 @@
-Listen %GNOCCHI_PORT%
-<VirtualHost *:%GNOCCHI_PORT%>
-    WSGIDaemonProcess gnocchi user=%USER% display-name=%{GROUP} processes=2 threads=10.
-    WSGIScriptAlias / %WSGI%
+
+WSGIDaemonProcess gnocchi lang='en_US.UTF-8' locale='en_US.UTF-8' user=%USER% display-name=%{GROUP} processes=2 threads=10 %VIRTUALENV%
+WSGIProcessGroup gnocchi
+WSGIScriptAlias %SCRIPT_NAME% %WSGI%
+<Location %SCRIPT_NAME%>
     WSGIProcessGroup gnocchi
     WSGIApplicationGroup %{GLOBAL}
+</Location>
 
-
-    ErrorLog /var/log/%APACHE_NAME%/gnocchi.log
-    CustomLog /var/log/%APACHE_NAME%/gnocchi-access.log combined
-
-</VirtualHost>
-
+WSGISocketPrefix /var/run/%APACHE_NAME%

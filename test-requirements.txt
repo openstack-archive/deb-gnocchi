@@ -1,14 +1,12 @@
 http://tarballs.openstack.org/ceilometer/ceilometer-master.tar.gz#egg=ceilometer
-gabbi>=0.6.0
+gabbi>=0.101.2
 coverage>=3.6
 fixtures
-keystonemiddleware
+keystonemiddleware>=1.5.0
 mock
-MySQL-python
 oslotest
 sphinx
 python-subunit>=0.0.18
-psycopg2
 tempest-lib>=0.2.0
 testrepository
 testscenarios
@@ -16,3 +14,4 @@ testtools>=0.9.38
 WebTest>=2.0.16
 doc8
 sphinxcontrib-httpdomain
+sysv_ipc

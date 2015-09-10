@@ -16,16 +16,14 @@
 import datetime
 import uuid
 
+import mock
 import pandas
-import testscenarios
 
 from gnocchi import aggregates
 from gnocchi.aggregates import moving_stats
 from gnocchi import storage
 from gnocchi.tests import base as tests_base
-
-
-load_tests = testscenarios.load_tests_apply_scenarios
+from gnocchi import utils
 
 
 class TestAggregates(tests_base.TestCase):
@@ -53,13 +51,18 @@ class TestAggregates(tests_base.TestCase):
 
     def _test_create_metric_and_data(self, data, spacing):
         metric = storage.Metric(
-            str(uuid.uuid4()), self.archive_policies['medium'])
+            uuid.uuid4(), self.archive_policies['medium'])
         self.storage.create_metric(metric)
         start_time = datetime.datetime(2014, 1, 1, 12)
         incr = datetime.timedelta(seconds=spacing)
         measures = [storage.Measure(start_time + incr * n, val)
                     for n, val in enumerate(data)]
         self.storage.add_measures(metric, measures)
+
+        with mock.patch.object(self.index, 'get_metrics') as f:
+            f.return_value = [metric]
+            self.storage.process_measures(self.index)
+
         return metric
 
     def test_retrieve_data(self):
@@ -70,13 +73,13 @@ class TestAggregates(tests_base.TestCase):
             window = 90.0
             self.assertRaises(aggregates.CustomAggFailure,
                               agg_obj.retrieve_data,
-                              self.storage, metric.name,
+                              self.storage, metric,
                               start=None, stop=None,
                               window=window)
 
             window = 120.0
             result = pandas.Series()
-            grain, result = agg_obj.retrieve_data(self.storage, metric.name,
+            grain, result = agg_obj.retrieve_data(self.storage, metric,
                                                   start=None, stop=None,
                                                   window=window)
             self.assertEqual(60.0, grain)
@@ -92,18 +95,18 @@ class TestAggregates(tests_base.TestCase):
         window = '120s'
 
         center = 'False'
-        result = agg_obj.compute(self.storage, metric.name,
+        result = agg_obj.compute(self.storage, metric,
                                  start=None, stop=None,
                                  window=window, center=center)
-        expected = [(datetime.datetime(2014, 1, 1, 12), 120.0, 32.25)]
+        expected = [(utils.datetime_utc(2014, 1, 1, 12), 120.0, 32.25)]
         self.assertEqual(expected, result)
 
         center = 'True'
-        result = agg_obj.compute(self.storage, metric.name,
+        result = agg_obj.compute(self.storage, metric,
                                  start=None, stop=None,
                                  window=window, center=center)
 
-        expected = [(datetime.datetime(2014, 1, 1, 12, 1), 120.0, 28.875)]
+        expected = [(utils.datetime_utc(2014, 1, 1, 12, 1), 120.0, 28.875)]
         self.assertEqual(expected, result)
         # (FIXME) atmalagon: doing a centered average when
         # there are only two points in the retrieved data seems weird.

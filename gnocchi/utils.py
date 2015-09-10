@@ -15,7 +15,8 @@
 # under the License.
 import datetime
 
-from oslo.utils import timeutils
+import iso8601
+from oslo_utils import timeutils
 from pytimeparse import timeparse
 import six
 
@@ -28,10 +29,37 @@ def to_timestamp(v):
     except (ValueError, TypeError):
         v = six.text_type(v)
         try:
-            return timeutils.normalize_time(timeutils.parse_isotime(v))
+            return timeutils.parse_isotime(v)
         except ValueError:
             delta = timeparse.timeparse(v)
             if delta is None:
                 raise ValueError("Unable to parse timestamp %s" % v)
-            return timeutils.utcnow() + datetime.timedelta(seconds=delta)
-    return datetime.datetime.utcfromtimestamp(v)
+            return utcnow() + datetime.timedelta(seconds=delta)
+    return datetime.datetime.utcfromtimestamp(v).replace(
+        tzinfo=iso8601.iso8601.UTC)
+
+
+def to_timespan(value):
+    if value is None:
+        raise ValueError("Invalid timespan")
+    try:
+        seconds = int(value)
+    except Exception:
+        try:
+            seconds = timeparse.timeparse(six.text_type(value))
+        except Exception:
+            raise ValueError("Unable to parse timespan")
+    if seconds is None:
+        raise ValueError("Unable to parse timespan")
+    if seconds <= 0:
+        raise ValueError("Timespan must be positive")
+    return datetime.timedelta(seconds=seconds)
+
+
+def utcnow():
+    """Better version of utcnow() that returns utcnow with a correct TZ."""
+    return timeutils.utcnow(True)
+
+
+def datetime_utc(*args):
+    return datetime.datetime(*args, tzinfo=iso8601.iso8601.UTC)

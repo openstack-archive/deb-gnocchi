@@ -17,15 +17,11 @@ import datetime
 import uuid
 
 import mock
-from oslo.utils import timeutils
-import testscenarios
+from oslo_utils import timeutils
 
 from gnocchi import statsd
-from gnocchi import storage
 from gnocchi.tests import base as tests_base
-
-
-load_tests = testscenarios.load_tests_apply_scenarios
+from gnocchi import utils
 
 
 class TestStatsd(tests_base.TestCase):
@@ -46,7 +42,7 @@ class TestStatsd(tests_base.TestCase):
         self.conf.set_override("archive_policy_name",
                                self.STATSD_ARCHIVE_POLICY_NAME, "statsd")
 
-        # NOTE(jd) Always use self.server.storage and self.server.indexer to
+        # NOTE(jd) Always use self.stats.storage and self.stats.indexer to
         # pick at the right storage/indexer used by the statsd server, and not
         # new instances from the base test class.
         self.stats = statsd.Stats(self.conf)
@@ -69,12 +65,16 @@ class TestStatsd(tests_base.TestCase):
                                             self.conf.statsd.resource_id,
                                             with_metrics=True)
 
-        measures = self.stats.storage.get_measures(storage.Metric(
-            r['metrics'][metric_key], None))
-        self.assertEqual([(datetime.datetime(2015, 1, 7), 86400.0, 1.0),
-                          (datetime.datetime(2015, 1, 7, 13), 3600.0, 1.0),
-                          (datetime.datetime(2015, 1, 7, 13, 58), 60.0, 1.0)],
-                         measures)
+        metric = r.get_metric(metric_key)
+
+        self.stats.storage.process_measures(self.stats.indexer)
+
+        measures = self.stats.storage.get_measures(metric)
+        self.assertEqual([
+            (utils.datetime_utc(2015, 1, 7), 86400.0, 1.0),
+            (utils.datetime_utc(2015, 1, 7, 13), 3600.0, 1.0),
+            (utils.datetime_utc(2015, 1, 7, 13, 58), 60.0, 1.0)
+        ], measures)
 
         utcnow.return_value = datetime.datetime(2015, 1, 7, 13, 59, 37)
         # This one is going to be ignored
@@ -86,13 +86,15 @@ class TestStatsd(tests_base.TestCase):
             ("127.0.0.1", 12345))
         self.stats.flush()
 
-        measures = self.stats.storage.get_measures(storage.Metric(
-            r['metrics'][metric_key], None))
-        self.assertEqual([(datetime.datetime(2015, 1, 7), 86400.0, 1.5),
-                          (datetime.datetime(2015, 1, 7, 13), 3600.0, 1.5),
-                          (datetime.datetime(2015, 1, 7, 13, 58), 60.0, 1.0),
-                          (datetime.datetime(2015, 1, 7, 13, 59), 60.0, 2.0)],
-                         measures)
+        self.stats.storage.process_measures(self.stats.indexer)
+
+        measures = self.stats.storage.get_measures(metric)
+        self.assertEqual([
+            (utils.datetime_utc(2015, 1, 7), 86400.0, 1.5),
+            (utils.datetime_utc(2015, 1, 7, 13), 3600.0, 1.5),
+            (utils.datetime_utc(2015, 1, 7, 13, 58), 60.0, 1.0),
+            (utils.datetime_utc(2015, 1, 7, 13, 59), 60.0, 2.0)
+        ], measures)
 
     def test_gauge(self):
         self._test_gauge_or_ms("g")
@@ -113,13 +115,15 @@ class TestStatsd(tests_base.TestCase):
         r = self.stats.indexer.get_resource('generic',
                                             self.conf.statsd.resource_id,
                                             with_metrics=True)
+        metric = r.get_metric(metric_key)
 
-        measures = self.stats.storage.get_measures(storage.Metric(
-            r['metrics'][metric_key], None))
-        self.assertEqual([(datetime.datetime(2015, 1, 7), 86400.0, 1.0),
-                          (datetime.datetime(2015, 1, 7, 13), 3600.0, 1.0),
-                          (datetime.datetime(2015, 1, 7, 13, 58), 60.0, 1.0)],
-                         measures)
+        self.stats.storage.process_measures(self.stats.indexer)
+
+        measures = self.stats.storage.get_measures(metric)
+        self.assertEqual([
+            (utils.datetime_utc(2015, 1, 7), 86400.0, 1.0),
+            (utils.datetime_utc(2015, 1, 7, 13), 3600.0, 1.0),
+            (utils.datetime_utc(2015, 1, 7, 13, 58), 60.0, 1.0)], measures)
 
         utcnow.return_value = datetime.datetime(2015, 1, 7, 13, 59, 37)
         self.server.datagram_received(
@@ -130,10 +134,11 @@ class TestStatsd(tests_base.TestCase):
             ("127.0.0.1", 12345))
         self.stats.flush()
 
-        measures = self.stats.storage.get_measures(storage.Metric(
-            r['metrics'][metric_key], None))
-        self.assertEqual([(datetime.datetime(2015, 1, 7), 86400.0, 28),
-                          (datetime.datetime(2015, 1, 7, 13), 3600.0, 28),
-                          (datetime.datetime(2015, 1, 7, 13, 58), 60.0, 1.0),
-                          (datetime.datetime(2015, 1, 7, 13, 59), 60.0, 55.0)],
-                         measures)
+        self.stats.storage.process_measures(self.stats.indexer)
+
+        measures = self.stats.storage.get_measures(metric)
+        self.assertEqual([
+            (utils.datetime_utc(2015, 1, 7), 86400.0, 28),
+            (utils.datetime_utc(2015, 1, 7, 13), 3600.0, 28),
+            (utils.datetime_utc(2015, 1, 7, 13, 58), 60.0, 1.0),
+            (utils.datetime_utc(2015, 1, 7, 13, 59), 60.0, 55.0)], measures)

@@ -2,8 +2,7 @@
  Installation
 ==============
 
-To install Gnocchi, you just need to run the standard Python installation
-procedure:
+To install Gnocchi, run the standard Python installation procedure:
 
 ::
 
@@ -13,13 +12,17 @@ procedure:
 Configuration
 =============
 
-Then configure Gnocchi by editing the `/etc/gnocchi/gnocchi.conf` sample. No
-config file is provided with the source code, but one can be easily created by
-running:
+Configure Gnocchi by editing `/etc/gnocchi/gnocchi.conf`.
+
+No config file is provided with the source code, but one can be easily
+created by running:
 
 ::
 
     tox -e genconfig
+
+The will create an `etc/gnocchi/gnocchi.conf` file which can be used as a
+base for the default configuration file at `/etc/gnocchi/gnocchi.conf`.
 
 The configuration file should be pretty explicit, but here are some of the base
 options you want to change and configure:
@@ -28,12 +31,12 @@ options you want to change and configure:
 +---------------------+---------------------------------------------------+
 | Option name         | Help                                              |
 +=====================+===================================================+
-| storage.driver      | The storage driver for metrics, Swift by default. |
+| storage.driver      | The storage driver for metrics.                   |
 +---------------------+---------------------------------------------------+
-| indexer.driver      | The indexer driver, SQLAlchemy by default.        |
+| indexer.url         | URL to your indexer.                              |
 +---------------------+---------------------------------------------------+
-| database.connection | URL to your database,                             |
-|                     | used by the *sqlalchemy* driver.                  |
+| storage.file_*      | Configuration options to store files              |
+|                     | if you use the file storage driver.               |
 +---------------------+---------------------------------------------------+
 | storage.swift_*     | Configuration options to access Swift             |
 |                     | if you use the Swift storage driver.              |
@@ -42,6 +45,22 @@ options you want to change and configure:
 |                     | if you use the Ceph storage driver.               |
 +---------------------+---------------------------------------------------+
 
+
+Gnocchi provides these storage drivers:
+
+- File (default)
+- `Swift`_
+- `Ceph`_
+
+Gnocchi provides these indexer drivers:
+
+- `PostgreSQL`_ (recommended)
+- `MySQL`_
+
+.. _`Swift`: https://launchpad.net/swift
+.. _`Ceph`: http://ceph.com/
+.. _`PostgreSQL`: http://postgresql.org
+.. _`MySQL`: http://mysql.com
 
 Indexer Initialization
 ======================
@@ -56,12 +75,14 @@ Once you have configured Gnocchi properly, you need to initialize the indexer:
 Running Gnocchi
 ===============
 
-To run Gnocchi, simple run the HTTP server:
+To run Gnocchi, simply run the HTTP server:
 
 ::
 
     gnocchi-api
 
+You then need to run the `gnocchi-metricd` daemon to enable new measures
+processing in the background.
 
 Running As A WSGI Application
 =============================

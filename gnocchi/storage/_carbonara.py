@@ -15,13 +15,15 @@
 # WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 # License for the specific language governing permissions and limitations
 # under the License.
+import logging
 import multiprocessing
 import operator
-import random
 import uuid
 
 from concurrent import futures
-from oslo.config import cfg
+import iso8601
+from oslo_config import cfg
+from oslo_serialization import msgpackutils
 from tooz import coordination
 
 from gnocchi import carbonara
@@ -33,64 +35,66 @@ OPTS = [
                help='Number of workers to run during adding new measures for '
                     'pre-aggregation needs.'),
     cfg.StrOpt('coordination_url',
+               secret=True,
                help='Coordination driver URL',
                default="file:///var/lib/gnocchi/locks"),
 
 ]
 
+LOG = logging.getLogger(__name__)
+
 
 class MeasureQuery(object):
     binary_operators = {
-        "=": operator.eq,
-        "==": operator.eq,
-        "eq": operator.eq,
+        u"=": operator.eq,
+        u"==": operator.eq,
+        u"eq": operator.eq,
 
-        "<": operator.lt,
-        "lt": operator.lt,
+        u"<": operator.lt,
+        u"lt": operator.lt,
 
-        ">": operator.gt,
-        "gt": operator.gt,
+        u">": operator.gt,
+        u"gt": operator.gt,
 
-        "<=": operator.le,
-        "≤": operator.le,
-        "le": operator.le,
+        u"<=": operator.le,
+        u"≤": operator.le,
+        u"le": operator.le,
 
-        ">=": operator.ge,
-        "≥": operator.ge,
-        "ge": operator.ge,
+        u">=": operator.ge,
+        u"≥": operator.ge,
+        u"ge": operator.ge,
 
-        "!=": operator.ne,
-        "≠": operator.ne,
-        "ne": operator.ne,
+        u"!=": operator.ne,
+        u"≠": operator.ne,
+        u"ne": operator.ne,
 
-        "%": operator.mod,
-        "mod": operator.mod,
+        u"%": operator.mod,
+        u"mod": operator.mod,
 
-        "+": operator.add,
-        "add": operator.add,
+        u"+": operator.add,
+        u"add": operator.add,
 
-        "-": operator.sub,
-        "sub": operator.sub,
+        u"-": operator.sub,
+        u"sub": operator.sub,
 
-        "*": operator.mul,
-        "×": operator.mul,
-        "mul": operator.mul,
+        u"*": operator.mul,
+        u"×": operator.mul,
+        u"mul": operator.mul,
 
-        "/": operator.truediv,
-        "÷": operator.truediv,
-        "div": operator.truediv,
+        u"/": operator.truediv,
+        u"÷": operator.truediv,
+        u"div": operator.truediv,
 
-        "**": operator.pow,
-        "^": operator.pow,
-        "pow": operator.pow,
-
+        u"**": operator.pow,
+        u"^": operator.pow,
+        u"pow": operator.pow,
     }
 
     multiple_operators = {
-        "or": any,
-        "∨": any,
-        "and": all,
-        "∧": all,
+        u"or": any,
+        u"∨": any,
+        u"and": all,
+        u"∧": all,
     }
 
     def __init__(self, tree):
@@ -140,16 +144,17 @@ class CarbonaraBasedStorageToozLock(object):
             str(uuid.uuid4()).encode('ascii'))
         self.coord.start()
 
-    def __del__(self):
+    def stop(self):
         self.coord.stop()
 
-    def __call__(self, metric, aggregation):
-        lock_name = (b"gnocchi-" + metric.name.encode('ascii')
-                     + b"-" + aggregation.encode('ascii'))
+    def __call__(self, metric):
+        lock_name = b"gnocchi-" + str(metric.id).encode('ascii')
         return self.coord.get_lock(lock_name)
 
 
 class CarbonaraBasedStorage(storage.StorageDriver):
+    MEASURE_PREFIX = "measure"
+
     def __init__(self, conf):
         super(CarbonaraBasedStorage, self).__init__(conf)
         self.executor = futures.ThreadPoolExecutor(
@@ -161,19 +166,15 @@ class CarbonaraBasedStorage(storage.StorageDriver):
         pass
 
     @staticmethod
-    def _lock(metric, aggregation):
+    def _lock(metric):
         raise NotImplementedError
 
     def create_metric(self, metric):
         self._create_metric_container(metric)
         for aggregation in metric.archive_policy.aggregation_methods:
-            # TODO(jd) Having the TimeSerieArchive.full_res_timeserie duped in
-            # each archive isn't the most efficient way of doing things. We
-            # may want to store it as its own object.
             archive = carbonara.TimeSerieArchive.from_definitions(
                 [(v.granularity, v.points)
                  for v in metric.archive_policy.definition],
-                back_window=metric.archive_policy.back_window,
                 aggregation_method=aggregation)
             self._store_metric_measures(metric, aggregation,
                                         archive.serialize())
@@ -189,39 +190,72 @@ class CarbonaraBasedStorage(storage.StorageDriver):
     def get_measures(self, metric, from_timestamp=None, to_timestamp=None,
                      aggregation='mean'):
         archive = self._get_measures_archive(metric, aggregation)
-        return archive.fetch(from_timestamp, to_timestamp)
+        return [(timestamp.replace(tzinfo=iso8601.iso8601.UTC), r, v)
+                for timestamp, r, v
+                in archive.fetch(from_timestamp, to_timestamp)]
 
     def _get_measures_archive(self, metric, aggregation):
         contents = self._get_measures(metric, aggregation)
         return carbonara.TimeSerieArchive.unserialize(contents)
 
-    def _add_measures(self, aggregation, metric, measures):
-        with self._lock(metric, aggregation):
-            contents = self._get_measures(metric, aggregation)
-            archive = carbonara.TimeSerieArchive.unserialize(contents)
-            try:
-                archive.set_values([(m.timestamp, m.value)
-                                    for m in measures])
-            except carbonara.NoDeloreanAvailable as e:
-                raise storage.NoDeloreanAvailable(e.first_timestamp,
-                                                  e.bad_timestamp)
-            self._store_metric_measures(metric, aggregation,
-                                        archive.serialize())
+    def _add_measures(self, aggregation, metric, timeserie):
+        contents = self._get_measures(metric, aggregation)
+        archive = carbonara.TimeSerieArchive.unserialize(contents)
+        archive.update(timeserie)
+        self._store_metric_measures(metric, aggregation,
+                                    archive.serialize())
 
     def add_measures(self, metric, measures):
-        # We are going to iterate multiple time over measures, so if it's a
-        # generator we need to build a list out of it right now.
-        measures = list(measures)
-        # NOTE(jd) So this is a (smart?) optimization: since we're going to
-        # lock for each of this aggregation type, if we are using running
-        # Gnocchi with multiple processes, let's randomize what we iter
-        # over so there are less chances we fight for the same lock!
-        agg_methods = list(metric.archive_policy.aggregation_methods)
-        random.shuffle(agg_methods)
-        self._map_in_thread(self._add_measures,
-                            list((aggregation, metric, measures)
-                                 for aggregation
-                                 in agg_methods))
+        self._store_measures(metric, msgpackutils.dumps(
+            list(map(tuple, measures))))
+
+    @staticmethod
+    def _unserialize_measures(data):
+        return msgpackutils.loads(data)
+
+    def process_measures(self, indexer):
+        metrics = indexer.get_metrics(
+            self._list_metric_with_measures_to_process())
+        for metric in metrics:
+            lock = self._lock(metric)
+            agg_methods = list(metric.archive_policy.aggregation_methods)
+            # Do not block if we cannot acquire the lock, that means some other
+            # worker is doing the job. We'll just ignore this metric and may
+            # get back later to it if needed.
+            if lock.acquire(blocking=False):
+                try:
+                    LOG.debug("Processing measures for %s" % metric)
+                    with self._process_measure_for_metric(metric) as measures:
+                        try:
+                            raw_measures = self._get_measures(metric, 'none')
+                        except storage.AggregationDoesNotExist:
+                            # This is the first time we treat measures for this
+                            # metric, create a new one
+                            mbs = metric.archive_policy.max_block_size
+                            ts = carbonara.BoundTimeSerie(
+                                block_size=mbs,
+                                back_window=metric.archive_policy.back_window)
+                        else:
+                            ts = carbonara.BoundTimeSerie.unserialize(
+                                raw_measures)
+
+                        def _map_add_measures(bound_timeserie):
+                            self._map_in_thread(
+                                self._add_measures,
+                                list((aggregation, metric, bound_timeserie)
+                                     for aggregation in agg_methods))
+
+                        ts.set_values(
+                            measures,
+                            before_truncate_callback=_map_add_measures,
+                            ignore_too_old_timestamps=True)
+
+                        self._store_metric_measures(metric, 'none',
+                                                    ts.serialize())
+                except Exception:
+                    LOG.error("Error processing new measures", exc_info=True)
+                finally:
+                    lock.release()
 
     def get_cross_metric_measures(self, metrics, from_timestamp=None,
                                   to_timestamp=None, aggregation='mean',
@@ -231,8 +265,11 @@ class CarbonaraBasedStorage(storage.StorageDriver):
                                   [(metric, aggregation)
                                    for metric in metrics])
         try:
-            return carbonara.TimeSerieArchive.aggregated(
-                tss, from_timestamp, to_timestamp, aggregation, needed_overlap)
+            return [(timestamp.replace(tzinfo=iso8601.iso8601.UTC), r, v)
+                    for timestamp, r, v
+                    in carbonara.TimeSerieArchive.aggregated(
+                        tss, from_timestamp, to_timestamp,
+                        aggregation, needed_overlap)]
         except carbonara.UnAggregableTimeseries as e:
             raise storage.MetricUnaggregatable(metrics, e.reason)
 
@@ -241,13 +278,15 @@ class CarbonaraBasedStorage(storage.StorageDriver):
         timeserie = self._get_measures_archive(metric, aggregation)
         values = timeserie.fetch(from_timestamp, to_timestamp)
         return {metric:
-                [(timestamp, granularity, value)
+                [(timestamp.replace(tzinfo=iso8601.iso8601.UTC),
+                  granularity, value)
                  for timestamp, granularity, value in values
                  if predicate(value)]}
 
-    def search_value(self, metrics, predicate, from_timestamp=None,
+    def search_value(self, metrics, query, from_timestamp=None,
                      to_timestamp=None, aggregation='mean'):
         result = {}
+        predicate = MeasureQuery(query)
         results = self._map_in_thread(self._find_measure,
                                       [(metric, aggregation, predicate,
                                         from_timestamp, to_timestamp)

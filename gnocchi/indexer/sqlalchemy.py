@@ -16,15 +16,17 @@
 from __future__ import absolute_import
 import itertools
 import operator
-import uuid
+import os.path
 
-from oslo.db import exception
-from oslo.db.sqlalchemy import session
-from oslo.utils import timeutils
+from oslo_db import exception
+from oslo_db.sqlalchemy import models
+from oslo_db.sqlalchemy import session
+from oslo_db.sqlalchemy import utils as oslo_db_utils
 import six
 import sqlalchemy
 from stevedore import extension
 
+from gnocchi import exceptions
 from gnocchi import indexer
 from gnocchi.indexer import sqlalchemy_base as base
 from gnocchi import utils
@@ -32,21 +34,40 @@ from gnocchi import utils
 Base = base.Base
 Metric = base.Metric
 ArchivePolicy = base.ArchivePolicy
+ArchivePolicyRule = base.ArchivePolicyRule
 Resource = base.Resource
+ResourceHistory = base.ResourceHistory
 
 _marker = indexer._marker
+
+
+def get_resource_mappers(ext):
+    if ext.name == "generic":
+        resource_ext = ext.plugin
+        resource_history_ext = ResourceHistory
+    else:
+        resource_ext = type(str(ext.name),
+                            (ext.plugin, base.ResourceExtMixin, Resource),
+                            {"__tablename__": ext.name})
+        resource_history_ext = type(str("%s_history" % ext.name),
+                                    (ext.plugin, base.ResourceHistoryExtMixin,
+                                     ResourceHistory),
+                                    {"__tablename__": (
+                                        "%s_history" % ext.name)})
+
+    return {'resource': resource_ext,
+            'history': resource_history_ext}
 
 
 class SQLAlchemyIndexer(indexer.IndexerDriver):
     resources = extension.ExtensionManager('gnocchi.indexer.resources')
 
-    _RESOURCE_CLASS_MAPPER = {ext.name: ext.plugin
+    _RESOURCE_CLASS_MAPPER = {ext.name: get_resource_mappers(ext)
                               for ext in resources.extensions}
 
     def __init__(self, conf):
         conf.set_override("connection", conf.indexer.url, "database")
         self.conf = conf
-        self.qt = QueryTransformer()
 
     def connect(self):
         self.engine_facade = session.EngineFacade.from_config(self.conf)
@@ -54,36 +75,49 @@ class SQLAlchemyIndexer(indexer.IndexerDriver):
     def disconnect(self):
         self.engine_facade.get_engine().dispose()
 
-    def upgrade(self):
-        engine = self.engine_facade.get_engine()
-        Base.metadata.create_all(engine, checkfirst=True)
+    def _get_alembic_config(self):
+        from alembic import config
 
-    def _resource_type_to_class(self, resource_type):
+        cfg = config.Config(
+            "%s/alembic/alembic.ini" % os.path.dirname(__file__))
+        cfg.set_main_option('sqlalchemy.url',
+                            self.conf.database.connection)
+        return cfg
+
+    def upgrade(self, nocreate=False):
+        from alembic import command
+        from alembic import migration
+
+        cfg = self._get_alembic_config()
+        cfg.conf = self.conf
+        if nocreate:
+            command.upgrade(cfg, "head")
+        else:
+            engine = self.engine_facade.get_engine()
+            ctxt = migration.MigrationContext.configure(engine.connect())
+            current_version = ctxt.get_current_revision()
+            if current_version is None:
+                Base.metadata.create_all(engine)
+                command.stamp(cfg, "head")
+            else:
+                command.upgrade(cfg, "head")
+
+    def _resource_type_to_class(self, resource_type, purpose="resource"):
         if resource_type not in self._RESOURCE_CLASS_MAPPER:
             raise indexer.UnknownResourceType(resource_type)
-        return self._RESOURCE_CLASS_MAPPER[resource_type]
-
-    @staticmethod
-    def _fixup_created_by_uuid(obj):
-        # FIXME(sileht): so weird, sqlachemy_utils.UUIDTYPE try to convert any
-        # input to a UUID to write it in db but don't update the orm object
-        # if the object doesn't come from the database
-        if (obj.created_by_user_id
-           and not isinstance(obj.created_by_user_id, uuid.UUID)):
-            obj.created_by_user_id = uuid.UUID(obj.created_by_user_id)
-        if (obj.created_by_project_id
-           and not isinstance(obj.created_by_project_id, uuid.UUID)):
-            obj.created_by_project_id = uuid.UUID(obj.created_by_project_id)
+        return self._RESOURCE_CLASS_MAPPER[resource_type][purpose]
 
     def list_archive_policies(self):
         session = self.engine_facade.get_session()
-        return [dict(ap) for ap in session.query(ArchivePolicy).all()]
+        aps = list(session.query(ArchivePolicy).all())
+        session.expunge_all()
+        return aps
 
     def get_archive_policy(self, name):
         session = self.engine_facade.get_session()
         ap = session.query(ArchivePolicy).get(name)
-        if ap:
-            return dict(ap)
+        session.expunge_all()
+        return ap
 
     def delete_archive_policy(self, name):
         session = self.engine_facade.get_session()
@@ -97,29 +131,22 @@ class SQLAlchemyIndexer(indexer.IndexerDriver):
             if isinstance(e.inner_exception, sqlalchemy.exc.IntegrityError):
                 raise indexer.ArchivePolicyInUse(name)
 
-    def get_metrics(self, uuids, details=False):
+    def get_metrics(self, uuids):
+        if not uuids:
+            return []
         session = self.engine_facade.get_session()
-        query = session.query(Metric).filter(Metric.id.in_(uuids))
-        if details:
-            query = query.options(sqlalchemy.orm.joinedload(
-                Metric.archive_policy))
-            metrics = []
-            for m in query:
-                metric = self._resource_to_dict(m)
-                metric['archive_policy'] = self._resource_to_dict(
-                    m.archive_policy)
-                del metric['archive_policy_name']
-                metrics.append(metric)
-            return metrics
+        query = session.query(Metric).filter(Metric.id.in_(uuids)).options(
+            sqlalchemy.orm.joinedload('resource'))
 
-        return list(map(self._resource_to_dict, query.all()))
+        metrics = list(query.all())
+        session.expunge_all()
+        return metrics
 
     def create_archive_policy(self, archive_policy):
         ap = ArchivePolicy(
             name=archive_policy.name,
             back_window=archive_policy.back_window,
-            definition=[d.to_dict()
-                        for d in archive_policy.definition],
+            definition=archive_policy.definition,
             aggregation_methods=list(archive_policy.aggregation_methods),
         )
         session = self.engine_facade.get_session()
@@ -128,11 +155,52 @@ class SQLAlchemyIndexer(indexer.IndexerDriver):
             session.flush()
         except exception.DBDuplicateEntry:
             raise indexer.ArchivePolicyAlreadyExists(archive_policy.name)
-        return dict(ap)
+        session.expunge_all()
+        return ap
+
+    def list_archive_policy_rules(self):
+        session = self.engine_facade.get_session()
+        aps = session.query(ArchivePolicyRule).all()
+        session.expunge_all()
+        return aps
+
+    def get_archive_policy_rule(self, name):
+        session = self.engine_facade.get_session()
+        ap = session.query(ArchivePolicyRule).get(name)
+        session.expunge_all()
+        return ap
+
+    def delete_archive_policy_rule(self, name):
+        session = self.engine_facade.get_session()
+        try:
+            if session.query(ArchivePolicyRule).filter(
+                    ArchivePolicyRule.name == name).delete() == 0:
+                raise indexer.NoSuchArchivePolicyRule(name)
+        except exception.DBError as e:
+            # TODO(prad): fix foreign key violations when oslo.db supports it
+            if isinstance(e.inner_exception, sqlalchemy.exc.IntegrityError):
+                raise indexer.ArchivePolicyRuleInUse(name)
+
+    def create_archive_policy_rule(self, name, metric_pattern,
+                                   archive_policy_name):
+        apr = ArchivePolicyRule(
+            name=name,
+            archive_policy_name=archive_policy_name,
+            metric_pattern=metric_pattern
+        )
+        session = self.engine_facade.get_session()
+        session.add(apr)
+        try:
+            session.flush()
+        except exception.DBDuplicateEntry:
+            raise indexer.ArchivePolicyRuleAlreadyExists(name)
+        session.expunge_all()
+        return apr
 
     def create_metric(self, id, created_by_user_id, created_by_project_id,
                       archive_policy_name,
-                      name=None, resource_id=None):
+                      name=None, resource_id=None,
+                      details=False):
         m = Metric(id=id,
                    created_by_user_id=created_by_user_id,
                    created_by_project_id=created_by_project_id,
@@ -142,16 +210,28 @@ class SQLAlchemyIndexer(indexer.IndexerDriver):
         session = self.engine_facade.get_session()
         session.add(m)
         session.flush()
-        return self._resource_to_dict(m)
+        if details:
+            # Fetch archive policy
+            m.archive_policy
+        session.expunge_all()
+        return m
 
-    def list_metrics(self, user_id=None, project_id=None):
+    def list_metrics(self, user_id=None, project_id=None, details=False,
+                     **kwargs):
         session = self.engine_facade.get_session()
         q = session.query(Metric)
         if user_id is not None:
             q = q.filter(Metric.created_by_user_id == user_id)
         if project_id is not None:
             q = q.filter(Metric.created_by_project_id == project_id)
-        return [self._resource_to_dict(m) for m in q.all()]
+        for attr in kwargs:
+            q = q.filter(getattr(Metric, attr) == kwargs[attr])
+        if details:
+            q = q.options(sqlalchemy.orm.joinedload('resource'))
+
+        metrics = list(q.all())
+        session.expunge_all()
+        return metrics
 
     def create_resource(self, resource_type, id,
                         created_by_user_id, created_by_project_id,
@@ -185,95 +265,110 @@ class SQLAlchemyIndexer(indexer.IndexerDriver):
                                                  ex.key,
                                                  getattr(r, ex.key))
             if metrics is not None:
-                self._set_metrics_for_resource(session, id,
-                                               created_by_user_id,
-                                               created_by_project_id,
-                                               metrics)
+                self._set_metrics_for_resource(session, r, metrics)
 
-        self._fixup_created_by_uuid(r)
-        return self._resource_to_dict(r, with_metrics=True)
+        # NOTE(jd) Force load of metrics :)
+        r.metrics
 
-    @staticmethod
-    def _resource_to_dict(resource, with_metrics=False):
-        r = dict(resource)
-        if with_metrics and isinstance(resource, Resource):
-            r['metrics'] = dict((m['name'], six.text_type(m['id']))
-                                for m in resource.metrics)
+        session.expunge_all()
         return r
 
     def update_resource(self, resource_type,
                         resource_id, ended_at=_marker, metrics=_marker,
                         append_metrics=False,
                         **kwargs):
+
+        now = utils.utcnow()
+
         resource_cls = self._resource_type_to_class(resource_type)
+        resource_history_cls = self._resource_type_to_class(resource_type,
+                                                            "history")
         session = self.engine_facade.get_session()
-        with session.begin():
-            q = session.query(
-                resource_cls).filter(
-                    resource_cls.id == resource_id)
-            r = q.first()
-            if r is None:
-                raise indexer.NoSuchResource(resource_id)
+        try:
+            with session.begin():
+                # NOTE(sileht): We use FOR UPDATE that is not galera friendly,
+                # but they are no other way to cleanly patch a resource and
+                # store the history that safe when two concurrent calls are
+                # done.
+                q = session.query(resource_cls).filter(
+                    resource_cls.id == resource_id).with_for_update()
 
-            if ended_at is not _marker:
-                # NOTE(jd) Could be better to have check in the db for that so
-                # we can just run the UPDATE
-                if r.started_at is not None and ended_at is not None:
-                    # Convert to UTC because we store in UTC :(
-                    ended_at = timeutils.normalize_time(ended_at)
-                    if r.started_at > ended_at:
-                        raise ValueError(
-                            "Start timestamp cannot be after end timestamp")
-                r.ended_at = ended_at
+                r = q.first()
+                if r is None:
+                    raise indexer.NoSuchResource(resource_id)
 
-            if kwargs:
-                for attribute, value in six.iteritems(kwargs):
-                    if hasattr(r, attribute):
-                        setattr(r, attribute, value)
-                    else:
-                        raise indexer.ResourceAttributeError(
-                            r.type, attribute)
+                # Build history
+                rh = resource_history_cls()
+                for col in sqlalchemy.inspect(resource_cls).columns:
+                    setattr(rh, col.name, getattr(r, col.name))
+                rh.revision_end = now
+                session.add(rh)
 
-            if metrics is not _marker:
-                if not append_metrics:
-                    session.query(Metric).filter(
-                        Metric.resource_id == resource_id).update(
-                            {"resource_id": None})
-                self._set_metrics_for_resource(session, resource_id,
-                                               r.created_by_user_id,
-                                               r.created_by_project_id,
-                                               metrics)
+                # Update the resource
+                if ended_at is not _marker:
+                    # NOTE(jd) MySQL does not honor checks. I hate it.
+                    engine = self.engine_facade.get_engine()
+                    if engine.dialect.name == "mysql":
+                        if r.started_at is not None and ended_at is not None:
+                            if r.started_at > ended_at:
+                                raise indexer.ResourceValueError(
+                                    resource_type, "ended_at", ended_at)
+                    r.ended_at = ended_at
 
-        self._fixup_created_by_uuid(r)
-        return self._resource_to_dict(r, with_metrics=True)
+                r.revision_start = now
+
+                if kwargs:
+                    for attribute, value in six.iteritems(kwargs):
+                        if hasattr(r, attribute):
+                            setattr(r, attribute, value)
+                        else:
+                            raise indexer.ResourceAttributeError(
+                                r.type, attribute)
+
+                if metrics is not _marker:
+                    if not append_metrics:
+                        session.query(Metric).filter(
+                            Metric.resource_id == resource_id).update(
+                                {"resource_id": None})
+                    self._set_metrics_for_resource(session, r, metrics)
+        except exception.DBConstraintError as e:
+            if e.check_name == "ck_started_before_ended":
+                raise indexer.ResourceValueError(
+                    resource_type, "ended_at", ended_at)
+            raise
+
+        # NOTE(jd) Force load of metrics – do it outside the session!
+        r.metrics
+
+        session.expunge_all()
+        return r
 
     @staticmethod
-    def _set_metrics_for_resource(session, resource_id,
-                                  user_id, project_id, metrics):
+    def _set_metrics_for_resource(session, r, metrics):
         for name, metric_id in six.iteritems(metrics):
             try:
                 update = session.query(Metric).filter(
                     Metric.id == metric_id,
-                    Metric.created_by_user_id == user_id,
-                    Metric.created_by_project_id == project_id).update(
-                        {"resource_id": resource_id, "name": name})
+                    Metric.created_by_user_id == r.created_by_user_id,
+                    Metric.created_by_project_id == r.created_by_project_id,
+                ).update({"resource_id": r.id, "name": name})
             except exception.DBDuplicateEntry:
                 raise indexer.NamedMetricAlreadyExists(name)
             if update == 0:
                 raise indexer.NoSuchMetric(metric_id)
+        session.expire(r, ['metrics'])
 
     def delete_resource(self, resource_id, delete_metrics=None):
         session = self.engine_facade.get_session()
         with session.begin():
             q = session.query(Resource).filter(
                 Resource.id == resource_id).options(
-                    sqlalchemy.orm.joinedload(Resource.metrics))
+                    sqlalchemy.orm.joinedload('metrics'))
             r = q.first()
             if r is None:
                 raise indexer.NoSuchResource(resource_id)
             if delete_metrics is not None:
-                delete_metrics(self.get_metrics([m.id for m in r.metrics],
-                                                details=True))
+                delete_metrics(self.get_metrics([m.id for m in r.metrics]))
             q.delete()
 
     def get_resource(self, resource_type, resource_id, with_metrics=False):
@@ -283,51 +378,137 @@ class SQLAlchemyIndexer(indexer.IndexerDriver):
             resource_cls).filter(
                 resource_cls.id == resource_id)
         if with_metrics:
-            q = q.options(sqlalchemy.orm.joinedload(resource_cls.metrics))
+            q = q.options(sqlalchemy.orm.joinedload('metrics'))
         r = q.first()
-        if r:
-            return self._resource_to_dict(r, with_metrics)
+        session.expunge_all()
+        return r
+
+    def _get_history_result_mapper(self, resource_type):
+        resource_cls = self._resource_type_to_class(resource_type)
+        history_cls = self._resource_type_to_class(resource_type, 'history')
+
+        resource_cols = {}
+        history_cols = {}
+        for col in sqlalchemy.inspect(history_cls).columns:
+            history_cols[col.name] = col
+            if col.name in ["revision", "revision_end"]:
+                value = None if col.name == "revision_end" else -1
+                resource_cols[col.name] = sqlalchemy.bindparam(
+                    col.name, value, col.type).label(col.name)
+            else:
+                resource_cols[col.name] = getattr(resource_cls, col.name)
+        s1 = sqlalchemy.select(history_cols.values())
+        s2 = sqlalchemy.select(resource_cols.values())
+        if resource_type != "generic":
+            s1 = s1.where(history_cls.revision == ResourceHistory.revision)
+            s2 = s2.where(resource_cls.id == Resource.id)
+        union_stmt = sqlalchemy.union(s1, s2)
+        stmt = union_stmt.alias("result")
+
+        class Result(base.ResourceJsonifier, base.GnocchiBase):
+            def __iter__(self):
+                return models.ModelIterator(self, iter(stmt.c.keys()))
+
+        sqlalchemy.orm.mapper(
+            Result, stmt, primary_key=[stmt.c.id, stmt.c.revision],
+            properties={
+                'metrics': sqlalchemy.orm.relationship(
+                    Metric,
+                    primaryjoin=Metric.resource_id == stmt.c.id,
+                    foreign_keys=Metric.resource_id)
+            })
+
+        return Result
 
     def list_resources(self, resource_type='generic',
                        attribute_filter=None,
-                       details=False):
+                       details=False,
+                       history=False,
+                       limit=None,
+                       marker=None,
+                       sorts=None):
+        sorts = sorts or []
 
-        resource_cls = self._resource_type_to_class(resource_type)
         session = self.engine_facade.get_session()
 
-        q = session.query(resource_cls)
+        if history:
+            target_cls = self._get_history_result_mapper(resource_type)
+        else:
+            target_cls = self._resource_type_to_class(resource_type)
+
+        q = session.query(target_cls)
 
         if attribute_filter:
+            engine = self.engine_facade.get_engine()
             try:
-                f = self.qt.build_filter(resource_cls, attribute_filter)
-            except QueryAttributeError as e:
-                raise indexer.ResourceAttributeError(
-                    resource_type, e.attribute)
+                f = QueryTransformer.build_filter(engine.dialect.name,
+                                                  target_cls,
+                                                  attribute_filter)
+            except indexer.QueryAttributeError as e:
+                # NOTE(jd) The QueryAttributeError does not know about
+                # resource_type, so convert it
+                raise indexer.ResourceAttributeError(resource_type,
+                                                     e.attribute)
+
             q = q.filter(f)
 
+        # transform the api-wg representation to the oslo.db one
+        sort_keys = []
+        sort_dirs = []
+        for sort in sorts:
+            sort_key, __, sort_dir = sort.partition(":")
+            sort_keys.append(sort_key.strip())
+            sort_dirs.append(sort_dir or 'asc')
+
+        # paginate_query require at list one uniq column
+        if 'id' not in sort_keys:
+            sort_keys.append('id')
+            sort_dirs.append('asc')
+
+        if marker:
+            resource_marker = self.get_resource(resource_type, marker)
+            if resource_marker is None:
+                raise indexer.InvalidPagination(
+                    "Invalid marker: `%s'" % marker)
+        else:
+            resource_marker = None
+
+        try:
+            q = oslo_db_utils.paginate_query(q, target_cls, limit=limit,
+                                             sort_keys=sort_keys,
+                                             marker=resource_marker,
+                                             sort_dirs=sort_dirs)
+        except (exception.InvalidSortKey, ValueError) as e:
+            raise indexer.InvalidPagination(e)
+
         # Always include metrics
-        q = q.options(sqlalchemy.orm.joinedload(resource_cls.metrics))
+        q = q.options(sqlalchemy.orm.joinedload("metrics"))
+        all_resources = q.all()
 
         if details:
-            grouped_by_type = itertools.groupby(q.all(),
-                                                operator.attrgetter('type'))
+            grouped_by_type = itertools.groupby(
+                all_resources, lambda r: (r.revision != -1, r.type))
             all_resources = []
-            for type, resources in grouped_by_type:
+            for (is_history, type), resources in grouped_by_type:
                 if type == 'generic':
                     # No need for a second query
                     all_resources.extend(resources)
                 else:
-                    resources_ids = [r.id for r in resources]
-                    all_resources.extend(
-                        session.query(
-                            self._RESOURCE_CLASS_MAPPER[type]).filter(
-                                self._RESOURCE_CLASS_MAPPER[type].id.in_(
-                                    resources_ids)).all())
-        else:
-            all_resources = q.all()
+                    if is_history:
+                        target_cls = self._resource_type_to_class(type,
+                                                                  "history")
+                        f = target_cls.revision.in_(
+                            [r.revision for r in resources])
+                    else:
+                        target_cls = self._resource_type_to_class(type)
+                        f = target_cls.id.in_([r.id for r in resources])
 
-        return [self._resource_to_dict(r, with_metrics=True)
-                for r in all_resources]
+                    q = session.query(target_cls).filter(f)
+                    # Always include metrics
+                    q = q.options(sqlalchemy.orm.joinedload('metrics'))
+                    all_resources.extend(q.all())
+        session.expunge_all()
+        return all_resources
 
     def delete_metric(self, id):
         session = self.engine_facade.get_session()
@@ -335,58 +516,107 @@ class SQLAlchemyIndexer(indexer.IndexerDriver):
         session.flush()
 
 
-class QueryAttributeError(AttributeError):
-    def __init__(self, table, attribute):
-        self.table = table
-        self.attribute = attribute
-
-
 class QueryTransformer(object):
-    operators = {
-        "=": operator.eq,
-        "<": operator.lt,
-        ">": operator.gt,
-        "<=": operator.le,
-        ">=": operator.ge,
-        "!=": operator.ne,
-        "in": lambda field_name, values: field_name.in_(values),
-        "like": lambda field, value: field.like(value),
+    unary_operators = {
+        u"not": sqlalchemy.not_,
     }
 
-    complex_operators = {"or": sqlalchemy.or_,
-                         "and": sqlalchemy.and_,
-                         "not": sqlalchemy.not_}
+    binary_operators = {
+        u"=": operator.eq,
+        u"==": operator.eq,
+        u"eq": operator.eq,
 
-    def _handle_complex_op(self, table, complex_op, nodes):
-        op = self.complex_operators[complex_op]
-        if op == sqlalchemy.not_:
-            nodes = [nodes]
-        element_list = []
-        for node in nodes:
-            element = self.build_filter(table, node)
-            element_list.append(element)
-        return op(*element_list)
+        u"<": operator.lt,
+        u"lt": operator.lt,
 
-    def _handle_simple_op(self, table, simple_op, nodes):
-        op = self.operators[simple_op]
-        field_name = list(nodes.keys())[0]
-        value = list(nodes.values())[0]
+        u">": operator.gt,
+        u"gt": operator.gt,
+
+        u"<=": operator.le,
+        u"≤": operator.le,
+        u"le": operator.le,
+
+        u">=": operator.ge,
+        u"≥": operator.ge,
+        u"ge": operator.ge,
+
+        u"!=": operator.ne,
+        u"≠": operator.ne,
+        u"ne": operator.ne,
+
+        u"in": lambda field_name, values: field_name.in_(values),
+
+        u"like": lambda field, value: field.like(value),
+    }
+
+    multiple_operators = {
+        u"or": sqlalchemy.or_,
+        u"∨": sqlalchemy.or_,
+
+        u"and": sqlalchemy.and_,
+        u"∧": sqlalchemy.and_,
+    }
+
+    @classmethod
+    def _handle_multiple_op(cls, engine, table, op, nodes):
+        return op(*[
+            cls.build_filter(engine, table, node)
+            for node in nodes
+        ])
+
+    @classmethod
+    def _handle_unary_op(cls, engine, table, op, node):
+        return op(cls.build_filter(engine, table, node))
+
+    @staticmethod
+    def _handle_binary_op(engine, table, op, nodes):
         try:
-            attr = getattr(table, field_name)
-        except AttributeError:
-            raise QueryAttributeError(table, field_name)
+            field_name, value = list(nodes.items())[0]
+        except Exception:
+            raise indexer.QueryError()
 
-        # Convert value to the right type
-        if isinstance(attr.type, base.PreciseTimestamp):
-            value = utils.to_timestamp(value)
+        if field_name == "lifespan":
+            attr = getattr(table, "ended_at") - getattr(table, "started_at")
+            value = utils.to_timespan(value)
+            if engine == "mysql":
+                # NOTE(jd) So subtracting 2 timestamps in MySQL result in some
+                # weird results based on string comparison. It's useless and it
+                # does not work at all with seconds or anything. Just skip it.
+                raise exceptions.NotImplementedError
+        else:
+            try:
+                attr = getattr(table, field_name)
+            except AttributeError:
+                raise indexer.QueryAttributeError(table, field_name)
+
+            if not hasattr(attr, "type"):
+                # This is not a column
+                raise indexer.QueryAttributeError(table, field_name)
+
+            # Convert value to the right type
+            if value is not None and isinstance(attr.type,
+                                                base.PreciseTimestamp):
+                value = utils.to_timestamp(value)
 
         return op(attr, value)
 
-    def build_filter(self, table, sub_tree):
-        if sub_tree == {}:
-            return True
-        operator = list(sub_tree.keys())[0]
-        nodes = list(sub_tree.values())[0]
-        if operator in self.complex_operators:
-            return self._handle_complex_op(table, operator, nodes)
-        return self._handle_simple_op(table, operator, nodes)
+    @classmethod
+    def build_filter(cls, engine, table, tree):
+        try:
+            operator, nodes = list(tree.items())[0]
+        except Exception:
+            raise indexer.QueryError()
+
+        try:
+            op = cls.multiple_operators[operator]
+        except KeyError:
+            try:
+                op = cls.binary_operators[operator]
+            except KeyError:
+                try:
+                    op = cls.unary_operators[operator]
+                except KeyError:
+                    raise indexer.QueryInvalidOperator(operator)
+                return cls._handle_unary_op(engine, op, nodes)
+            return cls._handle_binary_op(engine, table, op, nodes)
+        return cls._handle_multiple_op(engine, table, op, nodes)

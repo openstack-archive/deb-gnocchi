@@ -19,14 +19,13 @@ try:
     import asyncio
 except ImportError:
     import trollius as asyncio
-from oslo.utils import timeutils
 from oslo_log import log
 import six
 
-from gnocchi import archive_policy
 from gnocchi import indexer
 from gnocchi import service
 from gnocchi import storage
+from gnocchi import utils
 
 
 LOG = log.getLogger(__name__)
@@ -65,14 +64,14 @@ class Stats(object):
                     "Invalid sampling for ms: `%d`, should be none"
                     % sampling)
             self.times[metric_name] = storage.Measure(
-                timeutils.utcnow(), value)
+                utils.utcnow(), value)
         elif metric_type == "g":
             if sampling is not None:
                 raise ValueError(
                     "Invalid sampling for g: `%d`, should be none"
                     % sampling)
             self.gauges[metric_name] = storage.Measure(
-                timeutils.utcnow(), value)
+                utils.utcnow(), value)
         elif metric_type == "c":
             sampling = 1 if sampling is None else sampling
             if metric_name in self.counters:
@@ -80,7 +79,7 @@ class Stats(object):
             else:
                 current_value = 0
             self.counters[metric_name] = storage.Measure(
-                timeutils.utcnow(),
+                utils.utcnow(),
                 current_value + (value * (1 / sampling)))
         # TODO(jd) Support "set" type
         # elif metric_type == "s":
@@ -102,25 +101,17 @@ class Stats(object):
                 # is not designed to run in parallel and we do not envision
                 # operators manipulating the resource/metrics using the Gnocchi
                 # API at the same time.
-                if metric_name in resource['metrics']:
-                    metric_id = resource['metrics'][metric_name]
-                else:
-                    metric_id = uuid.uuid4()
-                # TODO(jd) Archive policies cannot be modified, so cache it?
-                metric = storage.Metric(
-                    str(metric_id),
-                    archive_policy.ArchivePolicy.from_dict(
-                        self.indexer.get_archive_policy(
-                            self.conf.statsd.archive_policy_name)))
-                if metric_name not in resource['metrics']:
+                metric = resource.get_metric(metric_name)
+                if not metric:
                     ap_name = self.conf.statsd.archive_policy_name
-                    self.indexer.create_metric(
-                        metric_id,
+                    metric = self.indexer.create_metric(
+                        uuid.uuid4(),
                         self.conf.statsd.user_id,
                         self.conf.statsd.project_id,
                         archive_policy_name=ap_name,
                         name=metric_name,
-                        resource_id=self.conf.statsd.resource_id)
+                        resource_id=self.conf.statsd.resource_id,
+                        details=True)
                     # TODO(jd) Slight optimization would be to change the
                     # driver to allow creation of metric with initial measures
                     # included!

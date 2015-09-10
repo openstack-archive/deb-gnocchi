@@ -16,17 +16,41 @@
 
 source $BASE/new/devstack/openrc admin admin
 
+set -e
+
+function generate_testr_results {
+    if [ -f .testrepository/0 ]; then
+        sudo .tox/py27-gate/bin/testr last --subunit > $WORKSPACE/testrepository.subunit
+        sudo mv $WORKSPACE/testrepository.subunit $BASE/logs/testrepository.subunit
+        sudo .tox/py27-gate/bin/python /usr/local/jenkins/slave_scripts/subunit2html.py $BASE/logs/testrepository.subunit $BASE/logs/testr_results.html
+        sudo gzip -9 $BASE/logs/testrepository.subunit
+        sudo gzip -9 $BASE/logs/testr_results.html
+        sudo chown jenkins:jenkins $BASE/logs/testrepository.subunit.gz $BASE/logs/testr_results.html.gz
+        sudo chmod a+r $BASE/logs/testrepository.subunit.gz $BASE/logs/testr_results.html.gz
+    fi
+}
+
 set -x
 
-cd $BASE/new/gnocchi
+export GNOCCHI_DIR="$BASE/new/gnocchi"
+sudo chown -R stack:stack $GNOCCHI_DIR
+cd $GNOCCHI_DIR
 
-keystone endpoint-list
-keystone service-list
-keystone endpoint-get --service metric
+openstack catalog list
 
-curl -X GET http://localhost:8041/v1/archive_policy -H "Content-Type: application/json"
+export GNOCCHI_SERVICE_TOKEN=$(openstack token issue -c id -f value)
+export GNOCCHI_SERVICE_URL=$(openstack catalog show metric -c endpoints -f value | awk '/publicURL/{print $2}')
 
-export GNOCCHI_SERVICE_HOST=localhost
-export GNOCCHI_SERVICE_PORT=8041
+curl -X GET ${GNOCCHI_SERVICE_URL}/v1/archive_policy -H "Content-Type: application/json"
 
-sudo -E tox -epy27-gate
+
+# Run tests
+echo "Running gnocchi functional test suite"
+set +e
+sudo -E -H -u stack tox -epy27-gate
+EXIT_CODE=$?
+set -e
+
+# Collect and parse result
+generate_testr_results
+exit $EXIT_CODE
