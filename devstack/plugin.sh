@@ -55,7 +55,8 @@ function is_gnocchi_enabled {
 # gnocchi_swift         gnocchi_swift  ResellerAdmin  (if Swift is enabled)
 function create_gnocchi_accounts {
     # Gnocchi
-    if [[ "$ENABLED_SERVICES" =~ "gnocchi-api" ]]; then
+    if is_service_enabled key && is_service_enabled gnocchi-api
+    then
         create_service_user "gnocchi"
 
         if [[ "$KEYSTONE_CATALOG_BACKEND" = 'sql' ]]; then
@@ -103,6 +104,55 @@ function _gnocchi_install_redis {
     pip_install_gr redis
 }
 
+# install influxdb
+# NOTE(chdent): InfluxDB is not currently packaged by the distro at the
+# version that gnocchi needs. Until that is true we're downloading
+# the debs and rpms packaged by the InfluxDB company. When it is
+# true this method can be changed to be similar to
+# _gnocchi_install_redis above.
+function _gnocchi_install_influxdb {
+    if is_package_installed influxdb; then
+        echo "influxdb already installed"
+    else
+        local file=$(mktemp /tmp/influxpkg-XXXXX)
+
+        if is_ubuntu; then
+            wget -O $file $GNOCCHI_INFLUXDB_DEB_PKG
+            sudo dpkg -i $file
+        elif is_fedora; then
+            wget -O $file $GNOCCHI_INFLUXDB_RPM_PKG
+            sudo rpm -i $file
+        fi
+        rm $file
+    fi
+
+    # restart influxdb via its initscript
+    sudo /opt/influxdb/init.sh restart
+}
+
+function _gnocchi_install_grafana {
+    if is_ubuntu; then
+        local file=$(mktemp /tmp/grafanapkg-XXXXX)
+        wget -O "$file" "$GRAFANA_DEB_PKG"
+        sudo dpkg -i "$file"
+        rm $file
+    elif is_fedora; then
+        sudo yum install "$GRAFANA_RPM_PKG"
+    fi
+
+    git_clone ${GRAFANA_PLUGINS_REPO} ${GRAFANA_PLUGINS_DIR}
+    # Grafana-server does not handle symlink :(
+    sudo mkdir -p /usr/share/grafana/public/app/plugins/datasource/gnocchi
+    sudo mount -o bind ${GRAFANA_PLUGINS_DIR}/datasources/gnocchi /usr/share/grafana/public/app/plugins/datasource/gnocchi
+
+    sudo service grafana-server restart
+}
+
+# remove the influxdb database
+function _gnocchi_cleanup_influxdb {
+    curl -G 'http://localhost:8086/query' --data-urlencode "q=DROP DATABASE $GNOCCHI_INFLUXDB_DBNAME"
+}
+
 function _cleanup_gnocchi_apache_wsgi {
     sudo rm -f $GNOCCHI_WSGI_DIR/*.wsgi
     sudo rm -f $(apache_site_config_for gnocchi)
@@ -129,21 +179,20 @@ function _config_gnocchi_apache_wsgi {
         sudo cp $GNOCCHI_DIR/devstack/apache-ported-gnocchi.template $gnocchi_apache_conf
         sudo sed -e "
             s|%GNOCCHI_PORT%|$GNOCCHI_SERVICE_PORT|g;
-            s|%APACHE_NAME%|$APACHE_NAME|g;
-            s|%WSGI%|$GNOCCHI_WSGI_DIR/app.wsgi|g;
-            s|%USER%|$STACK_USER|g
-            s|%VIRTUALENV%|$venv_path|g
         " -i $gnocchi_apache_conf
     else
         sudo cp $GNOCCHI_DIR/devstack/apache-gnocchi.template $gnocchi_apache_conf
         sudo sed -e "
-            s|%APACHE_NAME%|$APACHE_NAME|g;
             s|%SCRIPT_NAME%|$script_name|g;
-            s|%WSGI%|$GNOCCHI_WSGI_DIR/app.wsgi|g;
-            s|%USER%|$STACK_USER|g
-            s|%VIRTUALENV%|$venv_path|g
         " -i $gnocchi_apache_conf
     fi
+    sudo sed -e "
+            s|%APACHE_NAME%|$APACHE_NAME|g;
+            s|%WSGI%|$GNOCCHI_WSGI_DIR/app.wsgi|g;
+            s|%USER%|$STACK_USER|g
+            s|%APIWORKERS%|$API_WORKERS|g
+            s|%VIRTUALENV%|$venv_path|g
+        " -i $gnocchi_apache_conf
 }
 
 
@@ -158,17 +207,12 @@ function cleanup_gnocchi {
 
 # configure_gnocchi() - Set config files, create data dirs, etc
 function configure_gnocchi {
-    [ ! -d $GNOCCHI_CONF_DIR ] && sudo mkdir -m 755 -p $GNOCCHI_CONF_DIR
-    sudo chown $STACK_USER $GNOCCHI_CONF_DIR
-
     [ ! -d $GNOCCHI_DATA_DIR ] && sudo mkdir -m 755 -p $GNOCCHI_DATA_DIR
     sudo chown $STACK_USER $GNOCCHI_DATA_DIR
 
     # Configure logging
     iniset $GNOCCHI_CONF DEFAULT verbose True
-    if [ "$GNOCCHI_USE_MOD_WSGI" != "True" ]; then
-        iniset $GNOCCHI_CONF DEFAULT debug "$ENABLE_DEBUG_LOG_LEVEL"
-    fi
+    iniset $GNOCCHI_CONF DEFAULT debug "$ENABLE_DEBUG_LOG_LEVEL"
 
     # Install the policy file for the API server
     cp $GNOCCHI_DIR/etc/gnocchi/policy.json $GNOCCHI_CONF_DIR
@@ -198,15 +242,26 @@ function configure_gnocchi {
     elif [[ "$GNOCCHI_STORAGE_BACKEND" = 'file' ]] ; then
         iniset $GNOCCHI_CONF storage driver file
         iniset $GNOCCHI_CONF storage file_basepath $GNOCCHI_DATA_DIR/
+    elif [[ "$GNOCCHI_STORAGE_BACKEND" == 'influxdb' ]] ; then
+        iniset $GNOCCHI_CONF storage driver influxdb
+        iniset $GNOCCHI_CONF storage influxdb_database $GNOCCHI_INFLUXDB_DBNAME
     else
         echo "ERROR: could not configure storage driver"
         exit 1
     fi
 
-    if [ "$GNOCCHI_USE_KEYSTONE" != "True" ]; then
-        iniset $GNOCCHI_CONF api middlewares ""
+    if is_service_enabled key; then
+        if is_service_enabled gnocchi-grafana; then
+            iniset_multiline $GNOCCHI_CONF api middlewares oslo_middleware.cors.CORS keystonemiddleware.auth_token.AuthProtocol
+            iniset $KEYSTONE_CONF cors allowed_origin ${GRAFANA_URL}
+            iniset $GNOCCHI_CONF cors allowed_origin ${GRAFANA_URL}
+            iniset $GNOCCHI_CONF cors allow_methods GET,POST,PUT,DELETE,OPTIONS,HEAD,PATCH
+            iniset $GNOCCHI_CONF cors allow_headers Content-Type,Cache-Control,Content-Language,Expires,Last-Modified,Pragma,X-Auth-Token,X-Subject-Token
+        else
+            iniset $GNOCCHI_CONF api middlewares keystonemiddleware.auth_token.AuthProtocol
+        fi
     else
-        inicomment $GNOCCHI_CONF api middlewares
+        iniset $GNOCCHI_CONF api middlewares ""
     fi
 
     # Configure the indexer database
@@ -244,6 +299,12 @@ function configure_ceilometer_gnocchi {
     fi
 }
 
+function configure_aodh_gnocchi {
+    gnocchi_url=$(gnocchi_service_url)
+    iniset $AODH_CONF DEFAULT gnocchi_url $gnocchi_url
+}
+
+
 # init_gnocchi() - Initialize etc.
 function init_gnocchi {
     # Create cache dir
@@ -263,6 +324,16 @@ function install_gnocchi {
         _gnocchi_install_redis
     fi
 
+    if [[ "${GNOCCHI_STORAGE_BACKEND}" == 'influxdb' ]] ; then
+        _gnocchi_install_influxdb
+        pip_install influxdb
+    fi
+
+    if is_service_enabled gnocchi-grafana
+    then
+        _gnocchi_install_grafana
+    fi
+
     # NOTE(sileht): requirements are not merged with the global-requirement repo
     # setup_develop $GNOCCHI_DIR
     USE_CONSTRAINTS=False setup_package $GNOCCHI_DIR -e
@@ -271,13 +342,16 @@ function install_gnocchi {
         install_apache_wsgi
     fi
 
+    # Create configuration directory
+    [ ! -d $GNOCCHI_CONF_DIR ] && sudo mkdir -m 755 -p $GNOCCHI_CONF_DIR
+    sudo chown $STACK_USER $GNOCCHI_CONF_DIR
 }
 
 # start_gnocchi() - Start running processes, including screen
 function start_gnocchi {
     local token
 
-    run_process gnocchi-metricd "gnocchi-metricd -d -v --config-file $GNOCCHI_CONF"
+    run_process gnocchi-metricd "$GNOCCHI_BIN_DIR/gnocchi-metricd -d -v --config-file $GNOCCHI_CONF"
 
     if [ "$GNOCCHI_USE_MOD_WSGI" == "True" ]; then
         enable_apache_site gnocchi
@@ -294,7 +368,7 @@ function start_gnocchi {
             tail_log gnocchi-api /var/log/$APACHE_NAME/access[._]log
         fi
     else
-        run_process gnocchi-api "gnocchi-api -d -v --config-file $GNOCCHI_CONF"
+        run_process gnocchi-api "$GNOCCHI_BIN_DIR/gnocchi-api -d -v --config-file $GNOCCHI_CONF"
     fi
     # only die on API if it was actually intended to be turned on
     if is_service_enabled gnocchi-api; then
@@ -306,12 +380,12 @@ function start_gnocchi {
 
     # Create a default policy
     archive_policy_url="$(gnocchi_service_url)/v1/archive_policy"
-    if [ "$GNOCCHI_USE_KEYSTONE" == "True" ]; then
+    if is_service_enabled key; then
         token=$(openstack token issue -f value -c id)
         create_archive_policy() { curl -X POST -H "X-Auth-Token: $token" -H "Content-Type: application/json" -d "$1" $archive_policy_url ; }
     else
-        userid=$(openstack user show admin -f value -c id)
-        projectid=$(openstack project show admin -f value -c id)
+        userid=`uuidgen`
+        projectid=`uuidgen`
         create_archive_policy() { curl -X POST -H "X-ROLES: admin" -H "X-USER-ID: $userid" -H "X-PROJECT-ID: $projectid" -H "Content-Type: application/json" -d "$1" $archive_policy_url ; }
     fi
 
@@ -330,6 +404,14 @@ function stop_gnocchi {
     for serv in gnocchi-api; do
         stop_process $serv
     done
+
+    if [[ "${GNOCCHI_STORAGE_BACKEND}" == 'influxdb' ]] ; then
+        _gnocchi_cleanup_influxdb
+    fi
+
+    if is_service_enabled gnocchi-grafana; then
+        sudo umount /usr/share/grafana/public/app/plugins/datasource/gnocchi
+    fi
 }
 
 if is_service_enabled gnocchi-api; then
@@ -343,6 +425,10 @@ if is_service_enabled gnocchi-api; then
         if is_service_enabled ceilometer; then
             echo_summary "Configuring Ceilometer for gnocchi"
             configure_ceilometer_gnocchi
+        fi
+        if is_service_enabled aodh; then
+            echo_summary "Configuring Aodh for gnocchi"
+            configure_aodh_gnocchi
         fi
         if is_service_enabled ceph && [[ "$GNOCCHI_STORAGE_BACKEND" = 'ceph' ]] ; then
             echo_summary "Configuring Gnocchi for Ceph"

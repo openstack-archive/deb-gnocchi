@@ -125,6 +125,17 @@ class TestIndexerDriver(tests_base.TestCase):
                           self.index.create_resource,
                           'generic', r1, user, project)
 
+    def test_create_resource_with_new_metrics(self):
+        r1 = uuid.uuid4()
+        user = uuid.uuid4()
+        project = uuid.uuid4()
+        rc = self.index.create_resource(
+            'generic', r1, user, project,
+            metrics={"foobar": {"archive_policy_name": "low"}})
+        self.assertEqual(1, len(rc.metrics))
+        m = self.index.get_metrics([rc.metrics[0].id])
+        self.assertEqual(m[0], rc.metrics[0])
+
     def _do_test_create_instance(self, server_group=None):
         r1 = uuid.uuid4()
         user = uuid.uuid4()
@@ -442,6 +453,9 @@ class TestIndexerDriver(tests_base.TestCase):
         rc = self.index.create_resource('generic', r1, user, project,
                                         metrics={'foo': e1, 'bar': e2})
         self.index.delete_metric(e1)
+        self.assertRaises(indexer.NoSuchMetric,
+                          self.index.delete_metric,
+                          e1)
         r = self.index.get_resource('generic', r1, with_metrics=True)
         self.assertIsNotNone(r.started_at)
         self.assertIsNotNone(r.revision_start)
@@ -609,6 +623,23 @@ class TestIndexerDriver(tests_base.TestCase):
                 break
         else:
             self.fail("Some resources were not found")
+
+    def test_list_resource_weird_uuid(self):
+        r = self.index.list_resources(
+            'generic', attribute_filter={"=": {"id": "f00bar"}})
+        self.assertEqual(0, len(r))
+        self.assertRaises(
+            indexer.QueryValueError,
+            self.index.list_resources,
+            'generic',
+            attribute_filter={"=": {"id": "f00bar" * 50}})
+
+    def test_list_resource_weird_date(self):
+        self.assertRaises(
+            indexer.QueryValueError,
+            self.index.list_resources,
+            'generic',
+            attribute_filter={"=": {"started_at": "f00bar"}})
 
     def test_list_resources_without_history(self):
         e = uuid.uuid4()

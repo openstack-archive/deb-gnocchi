@@ -17,7 +17,6 @@
 # under the License.
 import logging
 import multiprocessing
-import operator
 import uuid
 
 from concurrent import futures
@@ -42,99 +41,6 @@ OPTS = [
 ]
 
 LOG = logging.getLogger(__name__)
-
-
-class MeasureQuery(object):
-    binary_operators = {
-        u"=": operator.eq,
-        u"==": operator.eq,
-        u"eq": operator.eq,
-
-        u"<": operator.lt,
-        u"lt": operator.lt,
-
-        u">": operator.gt,
-        u"gt": operator.gt,
-
-        u"<=": operator.le,
-        u"≤": operator.le,
-        u"le": operator.le,
-
-        u">=": operator.ge,
-        u"≥": operator.ge,
-        u"ge": operator.ge,
-
-        u"!=": operator.ne,
-        u"≠": operator.ne,
-        u"ne": operator.ne,
-
-        u"%": operator.mod,
-        u"mod": operator.mod,
-
-        u"+": operator.add,
-        u"add": operator.add,
-
-        u"-": operator.sub,
-        u"sub": operator.sub,
-
-        u"*": operator.mul,
-        u"×": operator.mul,
-        u"mul": operator.mul,
-
-        u"/": operator.truediv,
-        u"÷": operator.truediv,
-        u"div": operator.truediv,
-
-        u"**": operator.pow,
-        u"^": operator.pow,
-        u"pow": operator.pow,
-    }
-
-    multiple_operators = {
-        u"or": any,
-        u"∨": any,
-        u"and": all,
-        u"∧": all,
-    }
-
-    def __init__(self, tree):
-        self._eval = self.build_evaluator(tree)
-
-    def __call__(self, value):
-        return self._eval(value)
-
-    def build_evaluator(self, tree):
-        try:
-            operator, nodes = list(tree.items())[0]
-        except Exception:
-            return lambda value: tree
-        try:
-            op = self.multiple_operators[operator]
-        except KeyError:
-            try:
-                op = self.binary_operators[operator]
-            except KeyError:
-                raise storage.InvalidQuery("Unknown operator %s" % operator)
-            return self._handle_binary_op(op, nodes)
-        return self._handle_multiple_op(op, nodes)
-
-    def _handle_multiple_op(self, op, nodes):
-        elements = [self.build_evaluator(node) for node in nodes]
-        return lambda value: op((e(value) for e in elements))
-
-    def _handle_binary_op(self, op, node):
-        try:
-            iterator = iter(node)
-        except Exception:
-            return lambda value: op(value, node)
-        nodes = list(iterator)
-        if len(nodes) != 2:
-            raise storage.InvalidQuery(
-                "Binary operator %s needs 2 arguments, %d given" %
-                (op, len(nodes)))
-        node0 = self.build_evaluator(node[0])
-        node1 = self.build_evaluator(node[1])
-        return lambda value: op(node0(value), node1(value))
 
 
 class CarbonaraBasedStorageToozLock(object):
@@ -169,16 +75,6 @@ class CarbonaraBasedStorage(storage.StorageDriver):
     def _lock(metric):
         raise NotImplementedError
 
-    def create_metric(self, metric):
-        self._create_metric_container(metric)
-        for aggregation in metric.archive_policy.aggregation_methods:
-            archive = carbonara.TimeSerieArchive.from_definitions(
-                [(v.granularity, v.points)
-                 for v in metric.archive_policy.definition],
-                aggregation_method=aggregation)
-            self._store_metric_measures(metric, aggregation,
-                                        archive.serialize())
-
     @staticmethod
     def _get_measures(metric, aggregation):
         raise NotImplementedError
@@ -189,18 +85,25 @@ class CarbonaraBasedStorage(storage.StorageDriver):
 
     def get_measures(self, metric, from_timestamp=None, to_timestamp=None,
                      aggregation='mean'):
+        super(CarbonaraBasedStorage, self).get_measures(
+            metric, from_timestamp, to_timestamp, aggregation)
         archive = self._get_measures_archive(metric, aggregation)
         return [(timestamp.replace(tzinfo=iso8601.iso8601.UTC), r, v)
                 for timestamp, r, v
                 in archive.fetch(from_timestamp, to_timestamp)]
 
     def _get_measures_archive(self, metric, aggregation):
-        contents = self._get_measures(metric, aggregation)
+        try:
+            contents = self._get_measures(metric, aggregation)
+        except (storage.MetricDoesNotExist, storage.AggregationDoesNotExist):
+            return carbonara.TimeSerieArchive.from_definitions(
+                [(v.granularity, v.points)
+                 for v in metric.archive_policy.definition],
+                aggregation_method=aggregation)
         return carbonara.TimeSerieArchive.unserialize(contents)
 
     def _add_measures(self, aggregation, metric, timeserie):
-        contents = self._get_measures(metric, aggregation)
-        archive = carbonara.TimeSerieArchive.unserialize(contents)
+        archive = self._get_measures_archive(metric, aggregation)
         archive.update(timeserie)
         self._store_metric_measures(metric, aggregation,
                                     archive.serialize())
@@ -210,12 +113,30 @@ class CarbonaraBasedStorage(storage.StorageDriver):
             list(map(tuple, measures))))
 
     @staticmethod
+    def _store_measures(metric, data):
+        raise NotImplementedError
+
+    @staticmethod
+    def _delete_metric(metric):
+        raise NotImplementedError
+
+    def delete_metric(self, metric):
+        with self._lock(metric):
+            self._delete_metric(metric)
+
+    @staticmethod
     def _unserialize_measures(data):
         return msgpackutils.loads(data)
 
     def process_measures(self, indexer):
-        metrics = indexer.get_metrics(
-            self._list_metric_with_measures_to_process())
+        metrics_to_process = self._list_metric_with_measures_to_process()
+        metrics = indexer.get_metrics(metrics_to_process)
+        # This build the list of deleted metrics, i.e. the metrics we have
+        # measures to process for but that are not in the indexer anymore.
+        deleted_metrics_id = (set(map(uuid.UUID, metrics_to_process))
+                              - set(m.id for m in metrics))
+        for metric_id in deleted_metrics_id:
+            self._delete_unprocessed_measures_for_metric_id(metric_id)
         for metric in metrics:
             lock = self._lock(metric)
             agg_methods = list(metric.archive_policy.aggregation_methods)
@@ -228,6 +149,18 @@ class CarbonaraBasedStorage(storage.StorageDriver):
                     with self._process_measure_for_metric(metric) as measures:
                         try:
                             raw_measures = self._get_measures(metric, 'none')
+                        except storage.MetricDoesNotExist:
+                            try:
+                                self._create_metric(metric)
+                            except storage.MetricDoesNotExist:
+                                # Created in the mean time, do not worry
+                                pass
+                            # This is the first time we treat measures for this
+                            # metric, create a new one
+                            mbs = metric.archive_policy.max_block_size
+                            ts = carbonara.BoundTimeSerie(
+                                block_size=mbs,
+                                back_window=metric.archive_policy.back_window)
                         except storage.AggregationDoesNotExist:
                             # This is the first time we treat measures for this
                             # metric, create a new one
@@ -260,6 +193,8 @@ class CarbonaraBasedStorage(storage.StorageDriver):
     def get_cross_metric_measures(self, metrics, from_timestamp=None,
                                   to_timestamp=None, aggregation='mean',
                                   needed_overlap=100.0):
+        super(CarbonaraBasedStorage, self).get_cross_metric_measures(
+            metrics, from_timestamp, to_timestamp, aggregation, needed_overlap)
 
         tss = self._map_in_thread(self._get_measures_archive,
                                   [(metric, aggregation)
@@ -286,7 +221,7 @@ class CarbonaraBasedStorage(storage.StorageDriver):
     def search_value(self, metrics, query, from_timestamp=None,
                      to_timestamp=None, aggregation='mean'):
         result = {}
-        predicate = MeasureQuery(query)
+        predicate = storage.MeasureQuery(query)
         results = self._map_in_thread(self._find_measure,
                                       [(metric, aggregation, predicate,
                                         from_timestamp, to_timestamp)

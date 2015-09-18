@@ -130,14 +130,6 @@ class NoSuchArchivePolicyRule(IndexerException):
         self.archive_policy_rule = archive_policy_rule
 
 
-class ArchivePolicyRuleInUse(IndexerException):
-    """Error raised when an archive policy rule is still being used."""
-    def __init__(self, archive_policy_rule):
-        super(ArchivePolicyRuleInUse, self).__init__(
-            "Archive policy Rule %s is still in use" % archive_policy_rule)
-        self.archive_policy_rule = archive_policy_rule
-
-
 class NamedMetricAlreadyExists(IndexerException):
     """Error raised when a named metric already exists."""
     def __init__(self, metric):
@@ -193,6 +185,12 @@ class ArchivePolicyRuleAlreadyExists(IndexerException):
 class QueryError(IndexerException):
     def __init__(self):
         super(QueryError, self).__init__("Unable to parse this query")
+
+
+class QueryValueError(QueryError, ValueError):
+    def __init__(self, v, f):
+        super(QueryError, self).__init__("Invalid value: `%s' for field `%s'"
+                                         % (v, f))
 
 
 class QueryInvalidOperator(QueryError):
@@ -289,8 +287,7 @@ class IndexerDriver(object):
 
     @staticmethod
     def create_metric(id, created_by_user_id, created_by_project_id,
-                      archive_policy_name, name=None, resource_id=None,
-                      details=False):
+                      archive_policy_name, name=None, resource_id=None):
         raise exceptions.NotImplementedError
 
     @staticmethod

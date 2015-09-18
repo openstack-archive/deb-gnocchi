@@ -17,9 +17,7 @@
 STORAGE_DRIVER="$1"
 SQL_DRIVER="$2"
 
-ENABLED_SERVICES="key,gnocchi-api,gnocchi-metricd"
-ENABLED_SERVICES+="ceilometer-acentral,ceilometer-collector,ceilometer-api,"
-ENABLED_SERVICES+="ceilometer-alarm-notifier,ceilometer-alarm-evaluator,ceilometer-anotification,"
+ENABLED_SERVICES="key,gnocchi-api,gnocchi-metricd,"
 
 export DEVSTACK_GATE_INSTALL_TESTONLY=1
 export DEVSTACK_GATE_NO_SERVICES=1
@@ -39,6 +37,9 @@ case $STORAGE_DRIVER in
         ENABLED_SERVICES+="ceph"
         DEVSTACK_LOCAL_CONFIG+=$'\nexport GNOCCHI_STORAGE_BACKEND=ceph'
         ;;
+    influxdb)
+        DEVSTACK_LOCAL_CONFIG+=$'\nexport GNOCCHI_STORAGE_BACKEND=influxdb'
+        ;;
 esac
 
 
@@ -49,8 +50,6 @@ case $SQL_DRIVER in
         ;;
 esac
 
-DEVSTACK_LOCAL_CONFIG+=$'\nexport USE_VENV=True'
-DEVSTACK_LOCAL_CONFIG+=$'\nexport GNOCCHI_USE_KEYSTONE=False'
 export ENABLED_SERVICES
 export DEVSTACK_LOCAL_CONFIG
 

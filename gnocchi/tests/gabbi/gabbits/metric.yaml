@@ -47,7 +47,7 @@ tests:
           name: "disk.io.rate"
       status: 201
       response_json_paths:
-          $.archive_policy.name: cookies
+          $.archive_policy_name: cookies
           $.name: disk.io.rate
 
     - name: create metric with name no rule
@@ -70,7 +70,7 @@ tests:
           archive_policy_name: bad-cookie
       status: 400
       response_strings:
-          - Unknown archive policy bad-cookie
+          - Archive policy bad-cookie does not exist
 
     - name: create metric bad content-type
       url: /v1/metric
@@ -90,7 +90,7 @@ tests:
           archive_policy_name: cookies
       status: 201
       response_json_paths:
-          $.archive_policy.name: cookies
+          $.archive_policy_name: cookies
 
     - name: get valid metric id
       url: /v1/metric/$RESPONSE['$.id']
