@@ -1,5 +1,5 @@
-gnocchi (1.1.0-1) experimental; urgency=medium
+gnocchi (1.2.0-1) experimental; urgency=medium
 
-  * Initial release. (Closes: #XXXXXX)
+  * Initial release. (Closes: #799374)
 
  -- Thomas Goirand <zigo@debian.org>  Fri, 27 Mar 2015 10:32:47 +0100

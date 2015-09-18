@@ -11,6 +11,8 @@ Build-Depends: debhelper (>= 9),
                python-setuptools,
                python-sphinx,
 Build-Depends-Indep: alembic (>= 0.7.6),
+                     influxdb,
+                     influxdb-dev,
                      libpq-dev,
                      postgresql,
                      postgresql-server-dev-all,
@@ -65,7 +67,7 @@ Build-Depends-Indep: alembic (>= 0.7.6),
 Standards-Version: 3.9.6
 Vcs-Browser: http://anonscm.debian.org/gitweb/?p=openstack/python-gnocchi.git
 Vcs-Git: git://anonscm.debian.org/openstack/python-gnocchi.git
-Homepage: https://github.com/stackforge/gnocchi
+Homepage: https://github.com/openstack/gnocchi
 
 Package: python-gnocchi
 Architecture: all
@@ -74,6 +76,7 @@ Depends: alembic (>= 0.7.6),
          python-future,
          python-jinja2,
          python-jsonpatch (>= 1.9),
+         python-keystonemiddleware (>= 1.5.0),
          python-msgpack,
          python-numpy,
          python-oslo.config (>= 1:2.3.0),
@@ -153,6 +156,8 @@ Section: doc
 Architecture: all
 Depends: ${misc:Depends}, ${sphinxdoc:Depends}
 Description: Metric as a Service - doc
- HTTP API to store metrics and index resources.
+ Gnocchi is a service for managing a set of resources and storing metrics about
+ them, in a scalable and resilient way. Its functionalities are exposed over an
+ HTTP REST API.
  .
  This package contains the documentation.
