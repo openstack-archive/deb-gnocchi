@@ -2,7 +2,6 @@ http://tarballs.openstack.org/ceilometer/ceilometer-master.tar.gz#egg=ceilometer
 gabbi>=0.101.2
 coverage>=3.6
 fixtures
-keystonemiddleware>=1.5.0
 mock
 oslotest
 sphinx
@@ -14,4 +13,5 @@ testtools>=0.9.38
 WebTest>=2.0.16
 doc8
 sphinxcontrib-httpdomain
+influxdb>=2.4
 sysv_ipc

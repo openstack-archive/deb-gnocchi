@@ -17,6 +17,7 @@ from __future__ import absolute_import
 import itertools
 import operator
 import os.path
+import uuid
 
 from oslo_db import exception
 from oslo_db.sqlalchemy import models
@@ -24,6 +25,7 @@ from oslo_db.sqlalchemy import session
 from oslo_db.sqlalchemy import utils as oslo_db_utils
 import six
 import sqlalchemy
+import sqlalchemy_utils
 from stevedore import extension
 
 from gnocchi import exceptions
@@ -46,14 +48,15 @@ def get_resource_mappers(ext):
         resource_ext = ext.plugin
         resource_history_ext = ResourceHistory
     else:
+        tablename = getattr(ext.plugin, '__tablename__', ext.name)
         resource_ext = type(str(ext.name),
                             (ext.plugin, base.ResourceExtMixin, Resource),
-                            {"__tablename__": ext.name})
+                            {"__tablename__": tablename})
         resource_history_ext = type(str("%s_history" % ext.name),
                                     (ext.plugin, base.ResourceHistoryExtMixin,
                                      ResourceHistory),
                                     {"__tablename__": (
-                                        "%s_history" % ext.name)})
+                                        "%s_history" % tablename)})
 
     return {'resource': resource_ext,
             'history': resource_history_ext}
@@ -125,11 +128,11 @@ class SQLAlchemyIndexer(indexer.IndexerDriver):
             if session.query(ArchivePolicy).filter(
                     ArchivePolicy.name == name).delete() == 0:
                 raise indexer.NoSuchArchivePolicy(name)
-        except exception.DBError as e:
-            # TODO(jd) Add an exception in oslo.db to match foreign key
-            # violations
-            if isinstance(e.inner_exception, sqlalchemy.exc.IntegrityError):
+        except exception.DBReferenceError as e:
+            if (e.constraint ==
+               'fk_metric_archive_policy_name_archive_policy_name'):
                 raise indexer.ArchivePolicyInUse(name)
+            raise
 
     def get_metrics(self, uuids):
         if not uuids:
@@ -172,14 +175,9 @@ class SQLAlchemyIndexer(indexer.IndexerDriver):
 
     def delete_archive_policy_rule(self, name):
         session = self.engine_facade.get_session()
-        try:
-            if session.query(ArchivePolicyRule).filter(
-                    ArchivePolicyRule.name == name).delete() == 0:
-                raise indexer.NoSuchArchivePolicyRule(name)
-        except exception.DBError as e:
-            # TODO(prad): fix foreign key violations when oslo.db supports it
-            if isinstance(e.inner_exception, sqlalchemy.exc.IntegrityError):
-                raise indexer.ArchivePolicyRuleInUse(name)
+        if session.query(ArchivePolicyRule).filter(
+                ArchivePolicyRule.name == name).delete() == 0:
+            raise indexer.NoSuchArchivePolicyRule(name)
 
     def create_archive_policy_rule(self, name, metric_pattern,
                                    archive_policy_name):
@@ -199,8 +197,7 @@ class SQLAlchemyIndexer(indexer.IndexerDriver):
 
     def create_metric(self, id, created_by_user_id, created_by_project_id,
                       archive_policy_name,
-                      name=None, resource_id=None,
-                      details=False):
+                      name=None, resource_id=None):
         m = Metric(id=id,
                    created_by_user_id=created_by_user_id,
                    created_by_project_id=created_by_project_id,
@@ -209,10 +206,13 @@ class SQLAlchemyIndexer(indexer.IndexerDriver):
                    resource_id=resource_id)
         session = self.engine_facade.get_session()
         session.add(m)
-        session.flush()
-        if details:
-            # Fetch archive policy
-            m.archive_policy
+        try:
+            session.flush()
+        except exception.DBReferenceError as e:
+            if (e.constraint ==
+               'fk_metric_archive_policy_name_archive_policy_name'):
+                raise indexer.NoSuchArchivePolicy(archive_policy_name)
+            raise
         session.expunge_all()
         return m
 
@@ -345,17 +345,39 @@ class SQLAlchemyIndexer(indexer.IndexerDriver):
 
     @staticmethod
     def _set_metrics_for_resource(session, r, metrics):
-        for name, metric_id in six.iteritems(metrics):
-            try:
-                update = session.query(Metric).filter(
-                    Metric.id == metric_id,
-                    Metric.created_by_user_id == r.created_by_user_id,
-                    Metric.created_by_project_id == r.created_by_project_id,
-                ).update({"resource_id": r.id, "name": name})
-            except exception.DBDuplicateEntry:
-                raise indexer.NamedMetricAlreadyExists(name)
-            if update == 0:
-                raise indexer.NoSuchMetric(metric_id)
+        for name, value in six.iteritems(metrics):
+            if isinstance(value, uuid.UUID):
+                try:
+                    update = session.query(Metric).filter(
+                        Metric.id == value,
+                        (Metric.created_by_user_id
+                         == r.created_by_user_id),
+                        (Metric.created_by_project_id
+                         == r.created_by_project_id),
+                    ).update({"resource_id": r.id, "name": name})
+                except exception.DBDuplicateEntry:
+                    raise indexer.NamedMetricAlreadyExists(name)
+                if update == 0:
+                    raise indexer.NoSuchMetric(value)
+            else:
+                ap_name = value['archive_policy_name']
+                m = Metric(id=uuid.uuid4(),
+                           created_by_user_id=r.created_by_user_id,
+                           created_by_project_id=r.created_by_project_id,
+                           archive_policy_name=ap_name,
+                           name=name,
+                           resource_id=r.id)
+                session.add(m)
+                try:
+                    session.flush()
+                except exception.DBDuplicateEntry:
+                    raise indexer.NamedMetricAlreadyExists(name)
+                except exception.DBReferenceError as e:
+                    if (e.constraint ==
+                       'fk_metric_archive_policy_name_archive_policy_name'):
+                        raise indexer.NoSuchArchivePolicy(ap_name)
+                    raise
+
         session.expire(r, ['metrics'])
 
     def delete_resource(self, resource_id, delete_metrics=None):
@@ -512,8 +534,8 @@ class SQLAlchemyIndexer(indexer.IndexerDriver):
 
     def delete_metric(self, id):
         session = self.engine_facade.get_session()
-        session.query(Metric).filter(Metric.id == id).delete()
-        session.flush()
+        if session.query(Metric).filter(Metric.id == id).delete() == 0:
+            raise indexer.NoSuchMetric(id)
 
 
 class QueryTransformer(object):
@@ -594,9 +616,20 @@ class QueryTransformer(object):
                 raise indexer.QueryAttributeError(table, field_name)
 
             # Convert value to the right type
-            if value is not None and isinstance(attr.type,
-                                                base.PreciseTimestamp):
-                value = utils.to_timestamp(value)
+            if value is not None:
+                converter = None
+
+                if isinstance(attr.type, base.PreciseTimestamp):
+                    converter = utils.to_timestamp
+                elif (isinstance(attr.type, sqlalchemy_utils.UUIDType)
+                      and not isinstance(value, uuid.UUID)):
+                    converter = utils.ResourceUUID
+
+                if converter:
+                    try:
+                        value = converter(value)
+                    except Exception:
+                        raise indexer.QueryValueError(value, field_name)
 
         return op(attr, value)
 
