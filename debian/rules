@@ -3,7 +3,7 @@
 PYTHONS:=$(shell pyversions -vr)
 #PYTHON3S:=$(shell py3versions -vr)
 
-UPSTREAM_GIT = git://github.com/stackforge/gnocchi.git
+UPSTREAM_GIT = git://github.com/openstack/gnocchi.git
 include /usr/share/openstack-pkg-tools/pkgos.make
 
 export OSLO_PACKAGE_VERSION=$(VERSION)
@@ -23,6 +23,18 @@ override_dh_install:
 #	done
 	rm -rf $(CURDIR)/debian/python*-gnocchi/usr/lib/python*/dist-packages/*.pth
 
+override_dh_auto_build:
+	dh_auto_build -O--buildsystem=python_distutils
+	mkdir -p $(CURDIR)/debian/gnocchi-common/usr/share/gnocchi-common
+	oslo-config-generator --output-file $(CURDIR)/debian/gnocchi-common/usr/share/gnocchi-common/gnocchi.conf \
+		--wrap-width 140 \
+		--namespace gnocchi \
+		--namespace oslo.db \
+		--namespace oslo.log \
+		--namespace oslo.policy \
+		--namespace keystonemiddleware.auth_token
+
+
 override_dh_auto_test:
 ifeq (,$(findstring nocheck, $(DEB_BUILD_OPTIONS)))
 	@echo "===> Running tests"
@@ -36,6 +48,7 @@ ifeq (,$(findstring nocheck, $(DEB_BUILD_OPTIONS)))
 		chmod +x debian/start_pg.sh ; \
 		debian/start_pg.sh $$PG_MYTMPDIR ; \
 		export GNOCCHI_TEST_INDEXER_URL="postgresql:///template1?host=$$PG_MYTMPDIR&port=9823" ; \
+		export GNOCCHI_TEST_STORAGE_DRIVER=file ; \
 		echo "===> Testing with python$$i (python$$PYMAJOR)" ; \
 		rm -rf .testrepository ; \
 		testr-python$$PYMAJOR init ; \
@@ -50,17 +63,18 @@ ifeq (,$(findstring nocheck, $(DEB_BUILD_OPTIONS)))
 endif
 
 override_dh_sphinxdoc:
-		echo "===> Starting PGSQL" ; \
-		BINDIR=`pg_config --bindir` ; \
-		PG_MYTMPDIR=`mktemp -d` ; \
-		chown postgres:postgres $$PG_MYTMPDIR || true ; \
-		export PGHOST=$$PG_MYTMPDIR ; \
-		chmod +x debian/start_pg.sh ; \
-		debian/start_pg.sh $$PG_MYTMPDIR ; \
-		export GNOCCHI_TEST_INDEXER_URL="postgresql:///template1?host=$$PG_MYTMPDIR&port=9823" ; \
-	PYTHONPATH=. sphinx-build -b html doc/source debian/python-gnocchi-doc/usr/share/doc/python-gnocchi-doc/html ; \
-	dh_sphinxdoc -O--buildsystem=python_distutils ; \
-		$$BINDIR/pg_ctl stop -D $$PG_MYTMPDIR
+#		echo "===> Starting PGSQL" ; \
+#		BINDIR=`pg_config --bindir` ; \
+#		PG_MYTMPDIR=`mktemp -d` ; \
+#		chown postgres:postgres $$PG_MYTMPDIR || true ; \
+#		export PGHOST=$$PG_MYTMPDIR ; \
+#		chmod +x debian/start_pg.sh ; \
+#		debian/start_pg.sh $$PG_MYTMPDIR ; \
+#		export GNOCCHI_TEST_INDEXER_URL="postgresql:///template1?host=$$PG_MYTMPDIR&port=9823" ; \
+#	PYTHONPATH=. sphinx-build -b html doc/source debian/python-gnocchi-doc/usr/share/doc/python-gnocchi-doc/html ; \
+#	dh_sphinxdoc -O--buildsystem=python_distutils ; \
+#		$$BINDIR/pg_ctl stop -D $$PG_MYTMPDIR
+	echo "Do nothing"
 
 override_dh_clean:
 	dh_clean -O--buildsystem=python_distutils
@@ -75,4 +89,3 @@ override_dh_installpam override_dh_installppp override_dh_installudev override_d
 override_dh_installxfonts override_dh_gconf override_dh_icons override_dh_perl override_dh_usrlocal:
 override_dh_installcron override_dh_installdebconf:
 override_dh_installlogrotate override_dh_installgsettings:
-

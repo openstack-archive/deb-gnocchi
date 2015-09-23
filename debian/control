@@ -24,7 +24,8 @@ Build-Depends-Indep: alembic (>= 0.7.6),
                      python-gabbi (>= 1),
                      python-jinja2,
                      python-jsonpatch (>= 1.9),
-                     python-keystonemiddleware (>= 1.5.0),
+                     python-keystoneclient (>= 1:1.6.0),
+                     python-keystonemiddleware (>= 2.1.0),
                      python-mock,
                      python-msgpack,
                      python-mysqldb,
@@ -67,7 +68,7 @@ Build-Depends-Indep: alembic (>= 0.7.6),
 Standards-Version: 3.9.6
 Vcs-Browser: http://anonscm.debian.org/gitweb/?p=openstack/python-gnocchi.git
 Vcs-Git: git://anonscm.debian.org/openstack/python-gnocchi.git
-Homepage: https://github.com/stackforge/gnocchi
+Homepage: https://github.com/openstack/gnocchi
 
 Package: python-gnocchi
 Architecture: all
@@ -76,7 +77,8 @@ Depends: alembic (>= 0.7.6),
          python-future,
          python-jinja2,
          python-jsonpatch (>= 1.9),
-         python-keystonemiddleware (>= 1.5.0),
+         python-keystoneclient (>= 1:1.6.0),
+         python-keystonemiddleware (>= 2.1.0),
          python-msgpack,
          python-numpy,
          python-oslo.config (>= 1:2.3.0),
@@ -109,15 +111,55 @@ Depends: alembic (>= 0.7.6),
          ${python:Depends},
 Suggests: python-gnocchi-doc
 Description: Metric as a Service - Python 2.x
- HTTP API to store metrics and index resources.
+ Gnocchi is a service for managing a set of resources and storing metrics about
+ them, in a scalable and resilient way. Its functionalities are exposed over an
+ HTTP REST API.
  .
  This package contains the Python 2.x module.
+
+Package: gnocchi-common
+Architecture: all
+Depends: python-gnocchi (= ${binary:Version}),
+         ${misc:Depends},
+         ${python:Depends},
+Description: Metric as a Service - common files
+ Gnocchi is a service for managing a set of resources and storing metrics about
+ them, in a scalable and resilient way. Its functionalities are exposed over an
+ HTTP REST API.
+ .
+ This package contains the common files.
+
+Package: gnocchi-api
+Architecture: all
+Depends: gnocchi-common (= ${binary:Version}),
+         ${misc:Depends},
+         ${python:Depends},
+Description: Metric as a Service - API daemon
+ Gnocchi is a service for managing a set of resources and storing metrics about
+ them, in a scalable and resilient way. Its functionalities are exposed over an
+ HTTP REST API.
+ .
+ This package contains the API server.
+
+Package: gnocchi-metricd
+Architecture: all
+Depends: gnocchi-common (= ${binary:Version}),
+         ${misc:Depends},
+         ${python:Depends},
+Description: Metric as a Service - metric daemon
+ Gnocchi is a service for managing a set of resources and storing metrics about
+ them, in a scalable and resilient way. Its functionalities are exposed over an
+ HTTP REST API.
+ .
+ This package contains the metric daemon.
 
 Package: python-gnocchi-doc
 Section: doc
 Architecture: all
 Depends: ${misc:Depends}, ${sphinxdoc:Depends}
 Description: Metric as a Service - doc
- HTTP API to store metrics and index resources.
+ Gnocchi is a service for managing a set of resources and storing metrics about
+ them, in a scalable and resilient way. Its functionalities are exposed over an
+ HTTP REST API.
  .
  This package contains the documentation.
