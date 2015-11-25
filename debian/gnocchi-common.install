@@ -1,1 +1,2 @@
 etc/gnocchi/policy.json	/usr/share/gnocchi-common
+etc/gnocchi/api-paste.ini /usr/share/gnocchi-common

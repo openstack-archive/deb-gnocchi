@@ -14,6 +14,7 @@ if [ "$1" = "configure" ] || [ "$1" = "reconfigure" ] ; then
 
 	pkgos_write_new_conf gnocchi gnocchi.conf
 	pkgos_write_new_conf gnocchi policy.json
+	pkgos_write_new_conf gnocchi api-paste.ini
 
 	db_get gnocchi/configure_db
 	if [ "$RET" = "true" ] ; then

@@ -1,3 +1,9 @@
+gnocchi (1.3.0-2) unstable; urgency=medium
+
+  * Adds missing config file: api-paste.ini.
+
+ -- Thomas Goirand <zigo@debian.org>  Wed, 25 Nov 2015 13:18:12 +0000
+
 gnocchi (1.3.0-1) unstable; urgency=medium
 
   * Initial release. (Closes: #799374)
