@@ -23,8 +23,6 @@ override_dh_install:
 #	done
 	rm -rf $(CURDIR)/debian/python*-gnocchi/usr/lib/python*/dist-packages/*.pth
 
-override_dh_auto_build:
-	dh_auto_build -O--buildsystem=python_distutils
 	mkdir -p $(CURDIR)/debian/gnocchi-common/usr/share/gnocchi-common
 	oslo-config-generator --output-file $(CURDIR)/debian/gnocchi-common/usr/share/gnocchi-common/gnocchi.conf \
 		--wrap-width 140 \
