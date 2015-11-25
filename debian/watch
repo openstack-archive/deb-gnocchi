@@ -1,3 +1,4 @@
 version=3
-http://pypi.python.org/packages/source/g/gnocchi gnocchi-(.*).tar.gz
+opts="uversionmangle=s/\.(b|rc)/~$1/" \
+https://github.com/openstack/nova/gnocchi .*/(\d[\d\.]+)\.tar\.gz
 
