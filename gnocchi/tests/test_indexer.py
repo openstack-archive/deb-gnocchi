@@ -69,6 +69,19 @@ class TestIndexerDriver(tests_base.TestCase):
                           "low")
         self.index.delete_metric(metric_id)
 
+    def test_list_ap_rules_ordered(self):
+        name = str(uuid.uuid4())
+        self.index.create_archive_policy(
+            archive_policy.ArchivePolicy(name, 0, {}))
+        self.index.create_archive_policy_rule('rule1', 'abc.*', name)
+        self.index.create_archive_policy_rule('rule2', 'abc.xyz.*', name)
+        self.index.create_archive_policy_rule('rule3', 'abc.xyz', name)
+        rules = self.index.list_archive_policy_rules()
+        self.assertEqual(3, len(rules))
+        self.assertEqual('abc.xyz.*', rules[0]['metric_pattern'])
+        self.assertEqual('abc.xyz', rules[1]['metric_pattern'])
+        self.assertEqual('abc.*', rules[2]['metric_pattern'])
+
     def test_create_metric(self):
         r1 = uuid.uuid4()
         user = uuid.uuid4()
@@ -180,20 +193,29 @@ class TestIndexerDriver(tests_base.TestCase):
     def test_delete_resource(self):
         r1 = uuid.uuid4()
         self.index.create_resource('generic', r1, uuid.uuid4(), uuid.uuid4())
-
-        class Boom(Exception):
-            pass
-
-        def delete_metrics(metrics):
-            raise Boom
-
-        self.assertRaises(Boom,
-                          self.index.delete_resource,
-                          r1, delete_metrics=delete_metrics)
         self.index.delete_resource(r1)
         self.assertRaises(indexer.NoSuchResource,
                           self.index.delete_resource,
                           r1)
+
+    def test_delete_resource_with_metrics(self):
+        user = uuid.uuid4()
+        project = uuid.uuid4()
+        e1 = uuid.uuid4()
+        e2 = uuid.uuid4()
+        self.index.create_metric(e1, user, project,
+                                 archive_policy_name="low")
+        self.index.create_metric(e2, user, project,
+                                 archive_policy_name="low")
+        r1 = uuid.uuid4()
+        self.index.create_resource('generic', r1, user, project,
+                                   metrics={'foo': e1, 'bar': e2})
+        self.index.delete_resource(r1)
+        self.assertRaises(indexer.NoSuchResource,
+                          self.index.delete_resource,
+                          r1)
+        metrics = self.index.get_metrics([e1, e2])
+        self.assertEqual([], metrics)
 
     def test_delete_resource_non_existent(self):
         r1 = uuid.uuid4()
@@ -440,7 +462,7 @@ class TestIndexerDriver(tests_base.TestCase):
                           r1, uuid.uuid4(), uuid.uuid4(),
                           metrics={'foo': e1})
 
-    def test_delete_metric(self):
+    def test_delete_metric_on_resource(self):
         r1 = uuid.uuid4()
         e1 = uuid.uuid4()
         e2 = uuid.uuid4()
@@ -453,9 +475,8 @@ class TestIndexerDriver(tests_base.TestCase):
         rc = self.index.create_resource('generic', r1, user, project,
                                         metrics={'foo': e1, 'bar': e2})
         self.index.delete_metric(e1)
-        self.assertRaises(indexer.NoSuchMetric,
-                          self.index.delete_metric,
-                          e1)
+        # It can be called twice
+        self.index.delete_metric(e1)
         r = self.index.get_resource('generic', r1, with_metrics=True)
         self.assertIsNotNone(r.started_at)
         self.assertIsNotNone(r.revision_start)
@@ -865,3 +886,24 @@ class TestIndexerDriver(tests_base.TestCase):
 
     def test_get_metric_no_args(self):
         self.assertRaises(TypeError, self.index.get_metrics, *[])
+
+    def test_list_metrics(self):
+        e1 = uuid.uuid4()
+        user = uuid.uuid4()
+        project = uuid.uuid4()
+        self.index.create_metric(e1,
+                                 user, project,
+                                 archive_policy_name="low")
+        metrics = self.index.list_metrics()
+        self.assertIn(e1, [m.id for m in metrics])
+
+    def test_list_metrics_delete_status(self):
+        e1 = uuid.uuid4()
+        user = uuid.uuid4()
+        project = uuid.uuid4()
+        self.index.create_metric(e1,
+                                 user, project,
+                                 archive_policy_name="low")
+        self.index.delete_metric(e1)
+        metrics = self.index.list_metrics()
+        self.assertNotIn(e1, [m.id for m in metrics])

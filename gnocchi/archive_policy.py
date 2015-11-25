@@ -14,6 +14,7 @@
 # implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import collections
 import datetime
 import operator
 
@@ -59,6 +60,19 @@ class ArchivePolicy(object):
             else:
                 raise ValueError(
                     "Unable to understand policy definition %s" % d)
+
+        duplicate_granularities = [
+            granularity
+            for granularity, count in collections.Counter(
+                d.granularity for d in self.definition).items()
+            if count > 1
+        ]
+        if duplicate_granularities:
+            raise ValueError(
+                "More than one archive policy "
+                "uses granularity `%s'"
+                % duplicate_granularities[0]
+            )
 
         if aggregation_methods is None:
             self.aggregation_methods = self.DEFAULT_AGGREGATION_METHODS
@@ -142,6 +156,12 @@ class ArchivePolicyItem(dict):
             if timespan != granularity * points:
                 raise ValueError(
                     u"timespan ≠ granularity × points")
+
+        if granularity is not None and granularity <= 0:
+            raise ValueError("Granularity should be > 0")
+
+        if points is not None and points <= 0:
+            raise ValueError("Number of points should be > 0")
 
         if granularity is None:
             if points is None or timespan is None:

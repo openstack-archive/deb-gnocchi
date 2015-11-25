@@ -36,6 +36,8 @@ set -o xtrace
 
 # Defaults
 # --------
+GITDIR["python-gnocchiclient"]=$DEST/python-gnocchiclient
+GITREPO["python-gnocchiclient"]=${GNOCCHICLIENT_REPO:-${GIT_BASE}/openstack/python-gnocchiclient.git}
 
 # Functions
 # ---------
@@ -83,6 +85,15 @@ function gnocchi_service_url {
         echo "$GNOCCHI_SERVICE_PROTOCOL://$GNOCCHI_SERVICE_HOST:$GNOCCHI_SERVICE_PORT"
     else
         echo "$GNOCCHI_SERVICE_PROTOCOL://$GNOCCHI_SERVICE_HOST$GNOCCHI_SERVICE_PREFIX"
+    fi
+}
+
+function install_gnocchiclient {
+    if use_library_from_git python-gnocchiclient; then
+        git_clone_by_name python-gnocchiclient
+        setup_dev_lib python-gnocchiclient
+    else
+        pip_install gnocchiclient
     fi
 }
 
@@ -214,8 +225,8 @@ function configure_gnocchi {
     iniset $GNOCCHI_CONF DEFAULT verbose True
     iniset $GNOCCHI_CONF DEFAULT debug "$ENABLE_DEBUG_LOG_LEVEL"
 
-    # Install the policy file for the API server
-    cp $GNOCCHI_DIR/etc/gnocchi/policy.json $GNOCCHI_CONF_DIR
+    # Install the configuration files
+    cp $GNOCCHI_DIR/etc/gnocchi/* $GNOCCHI_CONF_DIR
 
     iniset $GNOCCHI_CONF storage coordination_url "$GNOCCHI_COORDINATOR_URL"
     if [ "${GNOCCHI_COORDINATOR_URL:0:7}" == "file://" ]; then
@@ -252,16 +263,14 @@ function configure_gnocchi {
 
     if is_service_enabled key; then
         if is_service_enabled gnocchi-grafana; then
-            iniset_multiline $GNOCCHI_CONF api middlewares oslo_middleware.cors.CORS keystonemiddleware.auth_token.AuthProtocol
+            iniset $GNOCCHI_PASTE_CONF pipeline:main pipeline "cors keystone_authtoken gnocchi"
             iniset $KEYSTONE_CONF cors allowed_origin ${GRAFANA_URL}
             iniset $GNOCCHI_CONF cors allowed_origin ${GRAFANA_URL}
             iniset $GNOCCHI_CONF cors allow_methods GET,POST,PUT,DELETE,OPTIONS,HEAD,PATCH
             iniset $GNOCCHI_CONF cors allow_headers Content-Type,Cache-Control,Content-Language,Expires,Last-Modified,Pragma,X-Auth-Token,X-Subject-Token
-        else
-            iniset $GNOCCHI_CONF api middlewares keystonemiddleware.auth_token.AuthProtocol
         fi
     else
-        iniset $GNOCCHI_CONF api middlewares ""
+        iniset $GNOCCHI_PASTE_CONF pipeline:main pipeline gnocchi
     fi
 
     # Configure the indexer database
@@ -313,7 +322,7 @@ function init_gnocchi {
     rm -f $GNOCCHI_AUTH_CACHE_DIR/*
 
     if is_service_enabled mysql postgresql; then
-        recreate_database gnocchi utf8
+        recreate_database gnocchi
         $GNOCCHI_BIN_DIR/gnocchi-dbsync
     fi
 }
@@ -334,9 +343,10 @@ function install_gnocchi {
         _gnocchi_install_grafana
     fi
 
-    # NOTE(sileht): requirements are not merged with the global-requirement repo
-    # setup_develop $GNOCCHI_DIR
-    USE_CONSTRAINTS=False setup_package $GNOCCHI_DIR -e
+    install_gnocchiclient
+
+    # We don't use setup_package because we don't follow openstack/requirements
+    sudo -H pip install -e "$GNOCCHI_DIR"
 
     if [ "$GNOCCHI_USE_MOD_WSGI" == "True" ]; then
         install_apache_wsgi
@@ -349,9 +359,6 @@ function install_gnocchi {
 
 # start_gnocchi() - Start running processes, including screen
 function start_gnocchi {
-    local token
-
-    run_process gnocchi-metricd "$GNOCCHI_BIN_DIR/gnocchi-metricd -d -v --config-file $GNOCCHI_CONF"
 
     if [ "$GNOCCHI_USE_MOD_WSGI" == "True" ]; then
         enable_apache_site gnocchi
@@ -364,34 +371,38 @@ function start_gnocchi {
             # will tail the entire apache logs, not just the gnocchi
             # parts. If you don't like this either USE_SCREEN=False
             # or set GNOCCHI_SERVICE_PORT.
-            tail_log gnocchi /var/log/$APACHE_NAME/error[._]log
-            tail_log gnocchi-api /var/log/$APACHE_NAME/access[._]log
+            tail_log gnocchi /var/log/$APACHE_NAME/error[_\.]log
+            tail_log gnocchi-api /var/log/$APACHE_NAME/access[_\.]log
         fi
     else
         run_process gnocchi-api "$GNOCCHI_BIN_DIR/gnocchi-api -d -v --config-file $GNOCCHI_CONF"
     fi
     # only die on API if it was actually intended to be turned on
     if is_service_enabled gnocchi-api; then
+
         echo "Waiting for gnocchi-api to start..."
-        if ! timeout $SERVICE_TIMEOUT sh -c "while ! curl --noproxy '*' -s $(gnocchi_service_url)/v1/resource/generic >/dev/null; do sleep 1; done"; then
+        if ! timeout $SERVICE_TIMEOUT sh -c "while ! curl -v --max-time 5 --noproxy '*' -s $(gnocchi_service_url)/v1/resource/generic ; do sleep 1; done"; then
             die $LINENO "gnocchi-api did not start"
         fi
     fi
 
     # Create a default policy
     archive_policy_url="$(gnocchi_service_url)/v1/archive_policy"
-    if is_service_enabled key; then
-        token=$(openstack token issue -f value -c id)
-        create_archive_policy() { curl -X POST -H "X-Auth-Token: $token" -H "Content-Type: application/json" -d "$1" $archive_policy_url ; }
-    else
-        userid=`uuidgen`
-        projectid=`uuidgen`
-        create_archive_policy() { curl -X POST -H "X-ROLES: admin" -H "X-USER-ID: $userid" -H "X-PROJECT-ID: $projectid" -H "Content-Type: application/json" -d "$1" $archive_policy_url ; }
+    if ! is_service_enabled key; then
+        export OS_AUTH_TYPE=gnocchi-noauth
+        export GNOCCHI_USER_ID=`uuidgen`
+        export GNOCCHI_PROJECT_ID=`uuidgen`
+        export GNOCCHI_ENDPOINT="${gnocchi_service_url}"
     fi
 
-    create_archive_policy '{"name":"low","definition":[{"granularity": "5m","points": 12},{"granularity": "1h","points": 24},{"granularity": "1d","points": 30}]}'
-    create_archive_policy '{"name":"medium","definition":[{"granularity": "60s","points": 60},{"granularity": "1h","points": 168},{"granularity": "1d","points": 365}]}'
-    create_archive_policy '{"name":"high","definition":[{"granularity": "1s","points": 86400},{"granularity": "1m","points": 43200},{"granularity": "1h","points": 8760}]}'
+    gnocchi archive-policy create -d granularity:5m,points:12 -d granularity:1h,points:24 -d granularity:1d,points:30 low
+    gnocchi archive-policy create -d granularity:60s,points:60 -d granularity:1h,points:168 -d granularity:1d,points:365 medium
+    gnocchi archive-policy create -d granularity:1s,points:86400 -d granularity:1m,points:43200 -d granularity:1h,points:8760 high
+
+    gnocchi archive-policy-rule create -a low -m "*" default
+
+    # run metricd last so we are properly waiting for swift and friends
+    run_process gnocchi-metricd "$GNOCCHI_BIN_DIR/gnocchi-metricd -d -v --config-file $GNOCCHI_CONF"
 }
 
 # stop_gnocchi() - Stop running processes

@@ -286,11 +286,20 @@ tests:
           - '"name": "medium"'
           - '"name": "large"'
 
+# Delete one as non-admin
+
+    - name: delete single archive non admin
+      url: /v1/archive_policy/medium
+      method: DELETE
+      status: 403
+
 # Delete one
 
     - name: delete single archive
       url: /v1/archive_policy/medium
       method: DELETE
+      request_headers:
+        x-roles: admin
       status: 204
 
 # It really is gone
@@ -304,6 +313,8 @@ tests:
     - name: delete missing archive
       url: /v1/archive_policy/grandiose
       method: DELETE
+      request_headers:
+        x-roles: admin
       status: 404
       response_strings:
           - Archive policy grandiose does not exist
@@ -324,6 +335,8 @@ tests:
     - name: delete in use policy
       url: /v1/archive_policy/large
       method: DELETE
+      request_headers:
+        x-roles: admin
       status: 400
       response_strings:
           - Archive policy large is still in use
@@ -345,6 +358,53 @@ tests:
       status: 400
       response_strings:
           - timespan ≠ granularity × points
+
+    - name: create invalid points policy
+      url: /v1/archive_policy
+      method: POST
+      request_headers:
+          content-type: application/json
+          x-roles: admin
+      data:
+          name: complex
+          definition:
+              - granularity: 0
+                points: 60
+      status: 400
+      response_strings:
+          - "Invalid input: not a valid value for dictionary value"
+
+    - name: create invalid granularity policy
+      url: /v1/archive_policy
+      method: POST
+      request_headers:
+          content-type: application/json
+          x-roles: admin
+      data:
+          name: complex
+          definition:
+              - granularity: 10
+                points: 0
+      status: 400
+      response_strings:
+          - "Invalid input: not a valid value for dictionary value"
+
+    - name: create identical granularities policy
+      url: /v1/archive_policy
+      method: POST
+      request_headers:
+          content-type: application/json
+          x-roles: admin
+      data:
+          name: complex
+          definition:
+              - granularity: 1 second
+                points: 60
+              - granularity: 1 second
+                points: 120
+      status: 400
+      response_strings:
+          - "More than one archive policy uses granularity `1.0'"
 
     - name: policy invalid unit
       url: /v1/archive_policy

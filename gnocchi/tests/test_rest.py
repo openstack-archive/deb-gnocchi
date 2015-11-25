@@ -23,9 +23,9 @@ import hashlib
 import json
 import uuid
 
+import keystonemiddleware.auth_token
 import mock
 from oslo_utils import timeutils
-import pecan
 import six
 from stevedore import extension
 import testscenarios
@@ -145,27 +145,44 @@ class TestingApp(webtest.TestApp):
             self.token = old_token
 
     def do_request(self, req, *args, **kwargs):
-        req.headers['X-Auth-Token'] = self.token
+        if self.auth:
+            req.headers['X-Auth-Token'] = self.token
         response = super(TestingApp, self).do_request(req, *args, **kwargs)
-        self.storage.process_measures(self.indexer)
+        self.storage.process_background_tasks(self.indexer)
         return response
 
 
 class RestTest(tests_base.TestCase, testscenarios.TestWithScenarios):
 
     scenarios = [
-        ('noauth', dict(middlewares=[])),
-        ('keystone', dict(
-            middlewares=['keystonemiddleware.auth_token.AuthProtocol'])),
+        ('noauth', dict(auth=False)),
+        ('keystone', dict(auth=True)),
     ]
+
+    @classmethod
+    def app_factory(cls, global_config, **local_conf):
+        return app.setup_app(cls.pecan_config, cls.conf)
+
+    @classmethod
+    def keystone_authtoken_filter_factory(cls, global_conf, **local_conf):
+        def auth_filter(app):
+            return keystonemiddleware.auth_token.AuthProtocol(app, {
+                "oslo_config_project": "gnocchi",
+                "oslo_config_config": cls.conf,
+            })
+        return auth_filter
 
     def setUp(self):
         super(RestTest, self).setUp()
-        c = {}
-        c.update(app.PECAN_CONFIG)
-        c['indexer'] = self.index
-        c['storage'] = self.storage
-        c['not_implemented_middleware'] = False
+        self.conf.set_override('paste_config',
+                               self.path_get('gnocchi/tests/api-paste.ini'),
+                               group="api")
+        pecan_config = {}
+        pecan_config.update(app.PECAN_CONFIG)
+        pecan_config['indexer'] = self.index
+        pecan_config['storage'] = self.storage
+        pecan_config['not_implemented_middleware'] = False
+
         self.conf.set_override("cache", TestingApp.CACHE_NAME,
                                group='keystone_authtoken')
         # TODO(jd) Override these options with values. They are not used, but
@@ -176,18 +193,22 @@ class RestTest(tests_base.TestCase, testscenarios.TestWithScenarios):
                                group="keystone_authtoken")
         self.conf.set_override("auth_uri", "foobar",
                                group="keystone_authtoken")
+        self.conf.set_override("delay_auth_decision",
+                               not self.auth,
+                               group="keystone_authtoken")
 
-        if hasattr(self, "middlewares"):
-            self.conf.set_override("middlewares",
-                                   self.middlewares, group="api")
+        RestTest.pecan_config = pecan_config
+        RestTest.conf = self.conf
 
         # TODO(chdent) Linting is turned off until a
         # keystonemiddleware bug is resolved.
         # See: https://bugs.launchpad.net/keystonemiddleware/+bug/1466499
-        self.app = TestingApp(pecan.load_app(c, cfg=self.conf),
+        self.app = TestingApp(app.load_app(self.conf,
+                                           appname="testing+auth"
+                                           if self.auth else "testing"),
                               storage=self.storage,
                               indexer=self.index,
-                              auth=bool(self.conf.api.middlewares),
+                              auth=self.auth,
                               lint=False)
 
     def test_deserialize_force_json(self):
@@ -211,6 +232,15 @@ class RestTest(tests_base.TestCase, testscenarios.TestWithScenarios):
             self.assertEqual(
                 sorted(aggregation_methods),
                 sorted(json.loads(result.text)['aggregation_methods']))
+
+    def test_status(self):
+        with self.app.use_admin_user():
+            r = self.app.get("/v1/status")
+        status = json.loads(r.text)
+        # We are sure this is empty because we call process_measures() each
+        # time we do a REST request in this TestingApp.
+        self.assertEqual({},
+                         status['storage']['measures_to_process'])
 
     @staticmethod
     def runTest():
@@ -621,6 +651,32 @@ class ResourceTest(RestTest):
                 "ended_at": "2014-01-03T02:02:02+00:00",
             },
             resource_type='generic')),
+        ('instance_disk', dict(
+            attributes={
+                "started_at": "2014-01-03T02:02:02+00:00",
+                "user_id": str(uuid.uuid4()),
+                "project_id": str(uuid.uuid4()),
+                "name": "disk-name",
+                "instance_id": str(uuid.uuid4()),
+            },
+            patchable_attributes={
+                "ended_at": "2014-01-03T02:02:02+00:00",
+                "name": "new-disk-name",
+            },
+            resource_type='instance_disk')),
+        ('instance_network_interface', dict(
+            attributes={
+                "started_at": "2014-01-03T02:02:02+00:00",
+                "user_id": str(uuid.uuid4()),
+                "project_id": str(uuid.uuid4()),
+                "name": "nic-name",
+                "instance_id": str(uuid.uuid4()),
+            },
+            patchable_attributes={
+                "ended_at": "2014-01-03T02:02:02+00:00",
+                "name": "new-nic-name",
+            },
+            resource_type='instance_network_interface')),
         ('instance', dict(
             attributes={
                 "started_at": "2014-01-03T02:02:02+00:00",
@@ -770,7 +826,7 @@ class ResourceTest(RestTest):
         # Set an id in the attribute
         self.attributes['id'] = str(uuid.uuid4())
         self.resource = self.attributes.copy()
-        if self.middlewares:
+        if self.auth:
             self.resource['created_by_user_id'] = FakeMemcache.USER_ID
             self.resource['created_by_project_id'] = FakeMemcache.PROJECT_ID
         else:
@@ -1648,6 +1704,69 @@ class ResourceTest(RestTest):
             self.assertIn(b"One of the metrics being aggregated doesn't have "
                           b"matching granularity",
                           result.body)
+
+    def test_get_res_named_metric_measure_aggregation_nooverlap(self):
+        result = self.app.post_json("/v1/metric",
+                                    params={"archive_policy_name": "medium"})
+        metric1 = json.loads(result.text)
+        self.app.post_json("/v1/metric/%s/measures" % metric1['id'],
+                           params=[{"timestamp": '2013-01-01 12:00:01',
+                                    "value": 8},
+                                   {"timestamp": '2013-01-01 12:00:02',
+                                    "value": 16}])
+
+        result = self.app.post_json("/v1/metric",
+                                    params={"archive_policy_name": "medium"})
+        metric2 = json.loads(result.text)
+
+        # NOTE(sileht): because the database is never cleaned between each test
+        # we must ensure that the query will not match resources from an other
+        # test, to achieve this we set a different server_group on each test.
+        server_group = str(uuid.uuid4())
+        if self.resource_type == 'instance':
+            self.attributes['server_group'] = server_group
+
+        self.attributes['metrics'] = {'foo': metric1['id']}
+        self.app.post_json("/v1/resource/" + self.resource_type,
+                           params=self.attributes)
+
+        self.attributes['id'] = str(uuid.uuid4())
+        self.attributes['metrics'] = {'foo': metric2['id']}
+        self.app.post_json("/v1/resource/" + self.resource_type,
+                           params=self.attributes)
+
+        result = self.app.post_json(
+            "/v1/aggregation/resource/" + self.resource_type
+            + "/metric/foo?aggregation=max",
+            params={"and":
+                    [{"=": {"server_group": server_group}},
+                     {"=": {"display_name": "myinstance"}}]},
+            expect_errors=True)
+
+        if self.resource_type == 'instance':
+            self.assertEqual(400, result.status_code, result.text)
+            self.assertIn("No overlap", result.text)
+        else:
+            self.assertEqual(400, result.status_code)
+
+        result = self.app.post_json(
+            "/v1/aggregation/resource/"
+            + self.resource_type + "/metric/foo?aggregation=min"
+            + "&needed_overlap=0",
+            params={"and":
+                    [{"=": {"server_group": server_group}},
+                     {"=": {"display_name": "myinstance"}}]},
+            expect_errors=True)
+
+        if self.resource_type == 'instance':
+            self.assertEqual(200, result.status_code, result.text)
+            measures = json.loads(result.text)
+            self.assertEqual([['2013-01-01T00:00:00+00:00', 86400.0, 8.0],
+                              ['2013-01-01T12:00:00+00:00', 3600.0, 8.0],
+                              ['2013-01-01T12:00:00+00:00', 60.0, 8.0]],
+                             measures)
+        else:
+            self.assertEqual(400, result.status_code)
 
     def test_get_res_named_metric_measure_aggregation_nominal(self):
         result = self.app.post_json("/v1/metric",

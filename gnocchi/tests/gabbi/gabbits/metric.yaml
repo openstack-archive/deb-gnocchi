@@ -32,6 +32,31 @@ tests:
         archive_policy_name: cookies
       status: 201
 
+    - name: create alt archive policy
+      url: /v1/archive_policy
+      method: POST
+      request_headers:
+          content-type: application/json
+          x-roles: admin
+      data:
+          name: cream
+          definition:
+              - granularity: 5 second
+      status: 201
+
+    - name: create alt archive policy rule
+      desc: extra rule that won't be matched
+      url: /v1/archive_policy_rule
+      method: POST
+      request_headers:
+          content-type: application/json
+          x-roles: admin
+      data:
+        name: test_ignore_rule
+        metric_pattern: "disk.*"
+        archive_policy_name: cream
+      status: 201
+
     - name: get metric empty
       url: /v1/metric
       status: 200
@@ -109,6 +134,48 @@ tests:
           - timestamp: "2015-03-06T14:34:12"
             value: 12
       status: 202
+
+    - name: create valid metric two
+      url: /v1/metric
+      method: POST
+      request_headers:
+          content-type: application/json
+      data:
+          archive_policy_name: cookies
+      status: 201
+      response_json_paths:
+          $.archive_policy_name: cookies
+
+    - name: push invalid measurements to metric
+      url: /v1/metric/$RESPONSE['$.id']/measures
+      request_headers:
+           content-type: application/json
+      method: post
+      data:
+          - timestamp: "2015-03-06T14:33:57"
+            value: 12
+          - timestamp: "2015-03-06T14:34:12"
+            value: "foobar"
+      status: 400
+
+    - name: create valid metric three
+      url: /v1/metric
+      method: POST
+      request_headers:
+          content-type: application/json
+      data:
+          archive_policy_name: cookies
+      status: 201
+      response_json_paths:
+          $.archive_policy_name: cookies
+
+    - name: push invalid measurements to metric bis
+      url: /v1/metric/$RESPONSE['$.id']/measures
+      request_headers:
+           content-type: application/json
+      method: post
+      data: 1
+      status: 400
 
     - name: add measure unknown metric
       url: /v1/metric/fake/measures

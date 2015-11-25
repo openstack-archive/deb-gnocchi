@@ -125,7 +125,7 @@ class NoSuchArchivePolicyRule(IndexerException):
     """Error raised when an archive policy rule does not exist."""
     def __init__(self, archive_policy_rule):
         super(NoSuchArchivePolicyRule, self).__init__(
-            "Archive policy Rule %s does not exist" %
+            "Archive policy rule %s does not exist" %
             str(archive_policy_rule))
         self.archive_policy_rule = archive_policy_rule
 
@@ -178,7 +178,7 @@ class ArchivePolicyRuleAlreadyExists(IndexerException):
     """Error raised when an archive policy rule already exists."""
     def __init__(self, name):
         super(ArchivePolicyRuleAlreadyExists, self).__init__(
-            "Archive policy %s already exists" % name)
+            "Archive policy rule %s already exists" % name)
         self.name = name
 
 
@@ -278,10 +278,11 @@ class IndexerDriver(object):
         raise exceptions.NotImplementedError
 
     @staticmethod
-    def get_metrics(uuids):
+    def get_metrics(uuids, active_only=True):
         """Get metrics informations from the indexer.
 
         :param uuids: A list of metric UUID.
+        :param active_only: Whether to only get active metrics
         """
         raise exceptions.NotImplementedError
 
@@ -317,4 +318,8 @@ class IndexerDriver(object):
 
     @staticmethod
     def delete_metric(id):
+        raise exceptions.NotImplementedError
+
+    @staticmethod
+    def expunge_metric(id):
         raise exceptions.NotImplementedError

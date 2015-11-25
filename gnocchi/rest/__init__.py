@@ -45,8 +45,10 @@ def arg_to_list(value):
     return []
 
 
-def abort(status_code=None, detail='', headers=None, comment=None, **kw):
+def abort(status_code, detail='', headers=None, comment=None, **kw):
     """Like pecan.abort, but make sure detail is a string."""
+    if status_code == 404 and not detail:
+        raise RuntimeError("http code 404 must have 'detail' set")
     return pecan.abort(status_code, six.text_type(detail),
                        headers, comment, **kw)
 
@@ -122,18 +124,23 @@ def set_resp_location_hdr(location):
     pecan.response.headers['Location'] = location
 
 
-def deserialize(schema, required=True):
+def deserialize():
     mime_type, options = werkzeug.http.parse_options_header(
         pecan.request.headers.get('Content-Type'))
     if mime_type != "application/json":
         abort(415)
     try:
-        params = json.loads(pecan.request.body.decode(
-            options.get('charset', 'ascii')))
+        params = json.load(pecan.request.body_file_raw,
+                           encoding=options.get('charset', 'ascii'))
     except Exception as e:
         abort(400, "Unable to decode body: " + six.text_type(e))
+    return params
+
+
+def deserialize_and_validate(schema, required=True):
     try:
-        return voluptuous.Schema(schema, required=required)(params)
+        return voluptuous.Schema(schema, required=required)(
+            deserialize())
     except voluptuous.Error as e:
         abort(400, "Invalid input: %s" % e)
 
@@ -228,10 +235,14 @@ class ArchivePolicyController(rest.RestController):
         if ap:
             enforce("get archive policy", ap)
             return ap
-        abort(404)
+        abort(404, indexer.NoSuchArchivePolicy(self.archive_policy))
 
     @pecan.expose()
     def delete(self):
+        # NOTE(jd) I don't think there's any point in fetching and passing the
+        # archive policy here, as the rule is probably checking the actual role
+        # of the user, not the content of the AP.
+        enforce("delete archive policy", {})
         try:
             pecan.request.indexer.delete_archive_policy(self.archive_policy)
         except indexer.NoSuchArchivePolicy as e:
@@ -265,7 +276,7 @@ class ArchivePoliciesController(rest.RestController):
                 }], voluptuous.Length(min=1)),
             })
 
-        body = deserialize(ArchivePolicySchema)
+        body = deserialize_and_validate(ArchivePolicySchema)
         # Validate the data
         try:
             ap = archive_policy.ArchivePolicy.from_dict(body)
@@ -289,10 +300,6 @@ class ArchivePoliciesController(rest.RestController):
 
 
 class ArchivePolicyRulesController(rest.RestController):
-    _custom_actions = {
-        'measures': ['GET', 'POST']
-    }
-
     @pecan.expose('json')
     def post(self):
         enforce("create archive policy rule", {})
@@ -302,7 +309,7 @@ class ArchivePolicyRulesController(rest.RestController):
             voluptuous.Required("archive_policy_name"): six.text_type,
             })
 
-        body = deserialize(ArchivePolicyRuleSchema)
+        body = deserialize_and_validate(ArchivePolicyRuleSchema)
         enforce("create archive policy rule", body)
         try:
             ap = pecan.request.indexer.create_archive_policy_rule(
@@ -323,7 +330,7 @@ class ArchivePolicyRulesController(rest.RestController):
         if ap:
             enforce("get archive policy rule", ap)
             return ap
-        abort(404)
+        abort(404, indexer.NoSuchArchivePolicyRule(name))
 
     @pecan.expose('json')
     def get_all(self):
@@ -332,6 +339,10 @@ class ArchivePolicyRulesController(rest.RestController):
 
     @pecan.expose()
     def delete(self, name):
+        # NOTE(jd) I don't think there's any point in fetching and passing the
+        # archive policy rule here, as the rule is probably checking the actual
+        # role of the user, not the content of the AP rule.
+        enforce("delete archive policy rule", {})
         try:
             pecan.request.indexer.delete_archive_policy_rule(name)
         except indexer.NoSuchArchivePolicyRule as e:
@@ -373,6 +384,10 @@ class AggregatedMetricController(rest.RestController):
     def get_cross_metric_measures_from_objs(metrics, start=None, stop=None,
                                             aggregation='mean',
                                             needed_overlap=100.0):
+        try:
+            needed_overlap = float(needed_overlap)
+        except ValueError:
+            abort(400, 'needed_overlap must be a number')
 
         if (aggregation
            not in archive_policy.ArchivePolicy.VALID_AGGREGATION_METHODS):
@@ -389,13 +404,9 @@ class AggregatedMetricController(rest.RestController):
             if len(metrics) == 1:
                 # NOTE(sileht): don't do the aggregation if we only have one
                 # metric
-                # NOTE(jd): the archive policy is None as it's not really used
-                # and it has a cost to request it from the indexer
                 measures = pecan.request.storage.get_measures(
                     metrics[0], start, stop, aggregation)
             else:
-                # NOTE(jd): the archive policy is None as it's not really used
-                # and it has a cost to request it from the indexer
                 measures = pecan.request.storage.get_cross_metric_measures(
                     metrics, start, stop, aggregation, needed_overlap)
             # Replace timestamp keys by their string versions
@@ -421,11 +432,22 @@ class MetricController(rest.RestController):
                                          invoke_on_load=True)
         self.custom_agg = dict((x.name, x.obj) for x in mgr)
 
-    Measures = voluptuous.Schema([{
-        voluptuous.Required("timestamp"):
-        Timestamp,
-        voluptuous.Required("value"): voluptuous.Any(float, int),
-    }])
+    @staticmethod
+    def to_measure(m):
+        # NOTE(sileht): we do the input validation
+        # during the iteration for not loop just for this
+        # and don't use voluptuous for performance reason
+        try:
+            value = float(m['value'])
+        except Exception:
+            abort(400, "Invalid input for a value")
+
+        try:
+            timestamp = utils.to_timestamp(m['timestamp'])
+        except Exception:
+            abort(400, "Invalid input for a timestamp")
+
+        return storage.Measure(timestamp, value)
 
     def enforce_metric(self, rule):
         enforce(rule, json.to_primitive(self.metric))
@@ -438,18 +460,17 @@ class MetricController(rest.RestController):
     @pecan.expose()
     def post_measures(self):
         self.enforce_metric("post measures")
-        try:
+        params = deserialize()
+        if not isinstance(params, list):
+            abort(400, "Invalid input for measures")
+        if params:
             pecan.request.storage.add_measures(
-                self.metric,
-                (storage.Measure(
-                    m['timestamp'],
-                    m['value']) for m in deserialize(self.Measures)))
-        except storage.MetricDoesNotExist as e:
-            abort(404, e)
+                self.metric, six.moves.map(self.to_measure, params))
         pecan.response.status = 202
 
     @pecan.expose('json')
-    def get_measures(self, start=None, stop=None, aggregation='mean', **param):
+    def get_measures(self, start=None, stop=None, aggregation='mean',
+                     granularity=None, **param):
         self.enforce_metric("get measures")
         if not (aggregation
                 in archive_policy.ArchivePolicy.VALID_AGGREGATION_METHODS
@@ -480,10 +501,8 @@ class MetricController(rest.RestController):
                     start, stop, **param)
             else:
                 measures = pecan.request.storage.get_measures(
-                    # NOTE(jd) We don't set the archive policy in the object
-                    # here because it's not used; but we could do it if needed
-                    # by requesting the metric details from the indexer
-                    self.metric, start, stop, aggregation)
+                    self.metric, start, stop, aggregation,
+                    int(granularity) if granularity is not None else None)
             # Replace timestamp keys by their string versions
             return [(timestamp.isoformat(), offset, v)
                     for timestamp, offset, v in measures]
@@ -497,10 +516,6 @@ class MetricController(rest.RestController):
     @pecan.expose()
     def delete(self):
         self.enforce_metric("delete metric")
-        try:
-            pecan.request.storage.delete_metric(self.metric)
-        except storage.MetricDoesNotExist as e:
-            abort(404, e)
         try:
             pecan.request.indexer.delete_metric(self.metric.id)
         except indexer.NoSuchMetric as e:
@@ -521,10 +536,10 @@ class MetricsController(rest.RestController):
         try:
             metric_id = uuid.UUID(id)
         except ValueError:
-            abort(404)
+            abort(404, indexer.NoSuchMetric(id))
         metrics = pecan.request.indexer.get_metrics([metric_id])
         if not metrics:
-            abort(404)
+            abort(404, indexer.NoSuchMetric(id))
         return MetricController(metrics[0]), remainder
 
     _MetricSchema = voluptuous.Schema({
@@ -577,7 +592,7 @@ class MetricsController(rest.RestController):
     @pecan.expose('json')
     def post(self):
         user, project = get_user_and_project()
-        body = deserialize(self.MetricSchema)
+        body = deserialize_and_validate(self.MetricSchema)
         try:
             m = pecan.request.indexer.create_metric(
                 uuid.uuid4(),
@@ -647,16 +662,16 @@ class NamedMetricController(rest.RestController):
         if resource:
             abort(404, indexer.NoSuchMetric(name))
         else:
-            abort(404)
+            abort(404, indexer.NoSuchResource(self.resource_id))
 
     @pecan.expose()
     def post(self):
         resource = pecan.request.indexer.get_resource(
             self.resource_type, self.resource_id)
         if not resource:
-            abort(404)
+            abort(404, indexer.NoSuchResource(self.resource_id))
         enforce("update resource", resource)
-        metrics = deserialize(MetricsSchema)
+        metrics = deserialize_and_validate(MetricsSchema)
         try:
             pecan.request.indexer.update_resource(
                 self.resource_type, self.resource_id, metrics=metrics,
@@ -675,7 +690,7 @@ class NamedMetricController(rest.RestController):
         resource = pecan.request.indexer.get_resource(
             self.resource_type, self.resource_id)
         if not resource:
-            abort(404)
+            abort(404, indexer.NoSuchResource(self.resource_id))
         enforce("get resource", resource)
         return pecan.request.indexer.list_metrics(resource_id=self.resource_id)
 
@@ -765,7 +780,7 @@ class GenericResourceController(rest.RestController):
         try:
             self.id = utils.ResourceUUID(id)
         except ValueError:
-            abort(404)
+            abort(404, indexer.NoSuchResource(id))
         self.metric = NamedMetricController(str(self.id), self._resource_type)
         self.history = ResourceHistoryController(str(self.id),
                                                  self._resource_type)
@@ -779,18 +794,18 @@ class GenericResourceController(rest.RestController):
             etag_precondition_check(resource)
             etag_set_headers(resource)
             return resource
-        abort(404)
+        abort(404, indexer.NoSuchResource(self.id))
 
     @pecan.expose('json')
     def patch(self):
         resource = pecan.request.indexer.get_resource(
             self._resource_type, self.id)
         if not resource:
-            abort(404)
+            abort(404, indexer.NoSuchResource(self.id))
         enforce("update resource", resource)
         etag_precondition_check(resource)
 
-        body = deserialize(self.Resource, required=False)
+        body = deserialize_and_validate(self.Resource, required=False)
 
         if not self._resource_need_update(resource, body):
             # No need to go further, we assume the db resource
@@ -824,19 +839,6 @@ class GenericResourceController(rest.RestController):
                 return True
         return False
 
-    @staticmethod
-    def _delete_metrics(metrics):
-        for metric in metrics:
-            enforce("delete metric", metric)
-        for metric in metrics:
-            try:
-                pecan.request.storage.delete_metric(metric)
-            except Exception:
-                LOG.error(
-                    "Unable to delete metric `%s' from storage, "
-                    "you will need to delete it manually" % metric.id,
-                    exc_info=True)
-
     @pecan.expose()
     def delete(self):
         resource = pecan.request.indexer.get_resource(
@@ -846,9 +848,7 @@ class GenericResourceController(rest.RestController):
         enforce("delete resource", resource)
         etag_precondition_check(resource)
         try:
-            pecan.request.indexer.delete_resource(
-                self.id,
-                delete_metrics=self._delete_metrics)
+            pecan.request.indexer.delete_resource(self.id)
         except indexer.NoSuchResource as e:
             abort(404, e)
 
@@ -857,7 +857,7 @@ class SwiftAccountResourceController(GenericResourceController):
     _resource_type = 'swift_account'
 
 
-class InstanceDisksResourceController(GenericResourceController):
+class InstanceDiskResourceController(GenericResourceController):
     _resource_type = 'instance_disk'
     Resource = ResourceSchema({
         "name": six.text_type,
@@ -865,7 +865,7 @@ class InstanceDisksResourceController(GenericResourceController):
     })
 
 
-class InstanceNetworkInterfacesResourceController(GenericResourceController):
+class InstanceNetworkInterfaceResourceController(GenericResourceController):
     _resource_type = 'instance_network_interface'
     Resource = ResourceSchema({
         "name": six.text_type,
@@ -935,7 +935,7 @@ class GenericResourcesController(rest.RestController):
 
     @pecan.expose('json')
     def post(self):
-        body = deserialize(self.Resource)
+        body = deserialize_and_validate(self.Resource)
         target = {
             "resource_type": self._resource_type,
         }
@@ -999,6 +999,20 @@ class GenericResourcesController(rest.RestController):
 class SwiftAccountsResourcesController(GenericResourcesController):
     _resource_type = 'swift_account'
     _resource_rest_class = SwiftAccountResourceController
+
+
+class InstanceDisksResourcesController(GenericResourcesController):
+    _resource_type = 'instance_disk'
+    _resource_rest_class = InstanceDiskResourceController
+
+    Resource = InstanceDiskResourceController.Resource
+
+
+class InstanceNetworkInterfacesResourcesController(GenericResourcesController):
+    _resource_type = 'instance_network_interface'
+    _resource_rest_class = InstanceNetworkInterfaceResourceController
+
+    Resource = InstanceNetworkInterfaceResourceController.Resource
 
 
 class InstancesResourcesController(GenericResourcesController):
@@ -1066,7 +1080,7 @@ class ResourcesController(rest.RestController):
         if ctrl:
             return ctrl, remainder
         else:
-            abort(404)
+            abort(404, indexer.UnknownResourceType(resource_type))
 
 
 def _ResourceSearchSchema(v):
@@ -1104,7 +1118,7 @@ class SearchResourceTypeController(rest.RestController):
     @pecan.expose('json')
     def post(self, **kwargs):
         if pecan.request.body:
-            attr_filter = deserialize(self.ResourceSearchSchema)
+            attr_filter = deserialize_and_validate(self.ResourceSearchSchema)
         else:
             attr_filter = None
 
@@ -1150,7 +1164,7 @@ class SearchResourceController(rest.RestController):
         if resource_type in ResourcesController.resources_ctrl_by_type:
             return SearchResourceTypeController(resource_type), remainder
         else:
-            abort(404)
+            abort(404, indexer.UnknownResourceType(resource_type))
 
 
 def _MetricSearchSchema(v):
@@ -1220,7 +1234,7 @@ class SearchMetricController(rest.RestController):
         if not pecan.request.body:
             abort(400, "No query specified in body")
 
-        query = deserialize(self.MetricSearchSchema)
+        query = deserialize_and_validate(self.MetricSearchSchema)
 
         if start is not None:
             try:
@@ -1301,6 +1315,15 @@ class CapabilityController(rest.RestController):
         return dict(aggregation_methods=aggregation_methods)
 
 
+class StatusController(rest.RestController):
+    @staticmethod
+    @pecan.expose('json')
+    def get():
+        enforce("get status", {})
+        report = pecan.request.storage.measures_report()
+        return {"storage": {"measures_to_process": report}}
+
+
 class V1Controller(object):
 
     def __init__(self):
@@ -1311,7 +1334,8 @@ class V1Controller(object):
             "metric": MetricsController(),
             "resource": ResourcesController(),
             "aggregation": Aggregation(),
-            "capabilities": CapabilityController()
+            "capabilities": CapabilityController(),
+            "status": StatusController(),
         }
         for name, ctrl in self.sub_controllers.items():
             setattr(self, name, ctrl)
