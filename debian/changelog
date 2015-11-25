@@ -1,4 +1,4 @@
-gnocchi (1.2.0-1) experimental; urgency=medium
+gnocchi (1.3.0-1) unstable; urgency=medium
 
   * Initial release. (Closes: #799374)
 
