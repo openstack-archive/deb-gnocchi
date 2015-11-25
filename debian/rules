@@ -34,6 +34,7 @@ override_dh_auto_install:
 		--namespace oslo.policy \
 		--namespace keystonemiddleware.auth_token
 	sed -i 's|^[ \t#]*url[ \t#]*=.*|url = sqlite:////var/lib/gnocchi/gnocchidb|' $(CURDIR)/debian/gnocchi-common/usr/share/gnocchi-common/gnocchi.conf
+	sed -i 's|^[# \t]*auth_protocol[\t #]*=.*|auth_protocol = http|' $(CURDIR)/debian/gnocchi-common/usr/share/gnocchi-common/gnocchi.conf
 
 	/usr/share/openstack-pkg-tools/pkgos_insert_include pkgos_func gnocchi-common.postinst
 	/usr/share/openstack-pkg-tools/pkgos_insert_include pkgos_func gnocchi-common.config
