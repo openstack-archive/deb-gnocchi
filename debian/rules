@@ -17,6 +17,8 @@ override_dh_auto_install:
 		python$$pyvers setup.py install --install-layout=deb \
 			--root $(CURDIR)/debian/python-gnocchi; \
 	done
+	mkdir -p $(CURDIR)/debian/python-gnocchi/usr/lib/python2.7/dist-packages/gnocchi/indexer
+	cp -auxf gnocchi/indexer/alembic $(CURDIR)/debian/python-gnocchi/usr/lib/python2.7/dist-packages/gnocchi/indexer
 #	set -e ; for pyvers in $(PYTHON3S); do \
 #		python$$pyvers setup.py install --install-layout=deb \
 #			--root $(CURDIR)/debian/python3-gnocchi; \
@@ -31,6 +33,8 @@ override_dh_auto_install:
 		--namespace oslo.log \
 		--namespace oslo.policy \
 		--namespace keystonemiddleware.auth_token
+	sed -i 's|^[ \t#]*url[ \t#]*=.*|url = sqlite:////var/lib/gnocchi/gnocchidb|' $(CURDIR)/debian/gnocchi-common/usr/share/gnocchi-common/gnocchi.conf
+
 	/usr/share/openstack-pkg-tools/pkgos_insert_include pkgos_func gnocchi-common.postinst
 	/usr/share/openstack-pkg-tools/pkgos_insert_include pkgos_func gnocchi-common.config
 	/usr/share/openstack-pkg-tools/pkgos_insert_include pkgos_func gnocchi-api.postinst
