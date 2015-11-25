@@ -12,7 +12,7 @@ UNIT_TEST_BLACKLIST = test_carbonara.CarbonaraCmd.*
 %:
 	dh $@ --buildsystem=python_distutils --with python2,sphinxdoc
 
-override_dh_install:
+override_dh_auto_install:
 	set -e ; for pyvers in $(PYTHONS); do \
 		python$$pyvers setup.py install --install-layout=deb \
 			--root $(CURDIR)/debian/python-gnocchi; \
@@ -32,6 +32,9 @@ override_dh_install:
 		--namespace oslo.policy \
 		--namespace keystonemiddleware.auth_token
 	/usr/share/openstack-pkg-tools/pkgos_insert_include pkgos_func gnocchi-common.postinst
+	/usr/share/openstack-pkg-tools/pkgos_insert_include pkgos_func gnocchi-common.config
+	/usr/share/openstack-pkg-tools/pkgos_insert_include pkgos_func gnocchi-api.postinst
+	/usr/share/openstack-pkg-tools/pkgos_insert_include pkgos_func gnocchi-api.config
 
 override_dh_auto_test:
 ifeq (,$(findstring nocheck, $(DEB_BUILD_OPTIONS)))
@@ -76,14 +79,12 @@ override_dh_sphinxdoc:
 
 override_dh_clean:
 	dh_clean -O--buildsystem=python_distutils
-	rm -rf build debian/gnocchi-common.postinst
+	rm -rf build debian/gnocchi-common.postinst debian/gnocchi-common.config debian/gnocchi-api.config debian/gnocchi-api.postinst
 
 # Commands not to run
 override_dh_installcatalogs:
 override_dh_installemacsen override_dh_installifupdown:
 override_dh_installinfo override_dh_installmenu override_dh_installmime:
-override_dh_installmodules override_dh_installlogcheck:
-override_dh_installpam override_dh_installppp override_dh_installudev override_dh_installwm:
+override_dh_installmodules override_dh_installpam override_dh_installppp override_dh_installudev override_dh_installwm:
 override_dh_installxfonts override_dh_gconf override_dh_icons override_dh_perl override_dh_usrlocal:
-override_dh_installcron override_dh_installdebconf:
-override_dh_installlogrotate override_dh_installgsettings:
+override_dh_installgsettings:

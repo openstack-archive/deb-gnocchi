@@ -3,9 +3,25 @@
 set -e
 
 if [ "$1" = "purge" ] ; then
-	rm -f /etc/gnocchi/gnocchi.conf /etc/gnocchi/policy.json
-	rmdir --ignore-fail-on-non-empty /etc/gnocchi || true
-	rm -rf /var/lib/gnocchi /var/log/gnocchi
+	if [ -f /usr/share/debconf/confmodule ] ; then
+		. /usr/share/debconf/confmodule
+
+		db_get gnocchi/configure_db || true
+		if [ "$RET" = "true" ]; then
+			if [ -f /usr/share/dbconfig-common/dpkg/postrm ]; then
+				. /usr/share/dbconfig-common/dpkg/postrm
+				dbc_go gnocchi-common $@
+			else
+				rm -f /etc/dbconfig-common/gnocchi-common.conf
+				if which ucf >/dev/null 2>&1; then
+					ucf --purge /etc/dbconfig-common/gnocchi-common.conf
+					ucfr --purge gnocchi-common /etc/dbconfig-common/gnocchi-common.conf
+				fi
+			fi
+		fi
+	fi
+
+	rm -fr /etc/gnocchi
 fi
 
 #DEBHELPER#

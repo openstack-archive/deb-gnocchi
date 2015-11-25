@@ -1,0 +1,15 @@
+#!/bin/sh
+
+set -e
+
+. /usr/share/debconf/confmodule
+
+CONF=/etc/gnocchi/gnocchi.conf
+
+#PKGOS-INCLUDE#
+
+pkgos_var_user_group gnocchi
+pkgos_dbc_read_conf -pkg gnocchi-common ${CONF} database connection gnocchi $@
+pkgos_read_admin_creds ${CONF} keystone_authtoken gnocchi
+
+exit 0
