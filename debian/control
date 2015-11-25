@@ -156,14 +156,14 @@ Description: Metric as a Service - metric daemon
  .
  This package contains the metric daemon.
 
-Package: python-gnocchi-doc
-Section: doc
-Architecture: all
-Depends: ${misc:Depends},
-         ${sphinxdoc:Depends},
-Description: Metric as a Service - doc
- Gnocchi is a service for managing a set of resources and storing metrics about
- them, in a scalable and resilient way. Its functionalities are exposed over an
- HTTP REST API.
- .
- This package contains the documentation.
+#Package: gnocchi-doc
+#Section: doc
+#Architecture: all
+#Depends: ${misc:Depends},
+#         ${sphinxdoc:Depends},
+#Description: Metric as a Service - doc
+# Gnocchi is a service for managing a set of resources and storing metrics about
+# them, in a scalable and resilient way. Its functionalities are exposed over an
+# HTTP REST API.
+# .
+# This package contains the documentation.
