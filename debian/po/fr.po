@@ -31,8 +31,8 @@ msgid ""
 "Typically this is also the hostname of the OpenStack Identity Service "
 "(Keystone)."
 msgstr ""
-"Veuillez indiquer le nom d'hôte de votre serveur d'authentification pour "
-"Gnocchi. Typiquement c'est également le nom d'hôte de votre Service "
+"Veuillez indiquer le nom d'hôte du serveur d'authentification pour "
+"Gnocchi. Typiquement c'est également le nom d'hôte du Service "
 "d'Identité OpenStack (Keystone)."
 
 #. Type: string
@@ -99,17 +99,12 @@ msgstr "Installer une base de données pour Gnocchi ?"
 #. Type: boolean
 #. Description
 #: ../gnocchi-common.templates:6001
-#, fuzzy
-#| msgid ""
-#| "No database has been set up for glance-registry or glance-api to use. "
-#| "Before continuing, you should make sure you have the following "
-#| "information:"
 msgid ""
 "No database has been set up for Gnocchi to use. Before continuing, you "
 "should make sure you have the following information:"
 msgstr ""
-"Aucune base de données n'a été installée pour le registre de gnocchi ou pour "
-"l'API de Gnocchi. Avant de continuer, assurez vous d'avoir :"
+"Aucune base de données n'a été installée pour "
+"Gnocchi. Avant de continuer, assurez-vous d'avoir :"
 
 #. Type: boolean
 #. Description
@@ -135,21 +130,17 @@ msgid ""
 "with regular SQLite support."
 msgstr ""
 "Si certains de ces prérequis sont manquants, ignorer cette option et "
-"exécutez l'application avec le support SQLite normal."
+"exécutez l'application avec la gestion SQLite normale."
 
 #. Type: boolean
 #. Description
 #: ../gnocchi-common.templates:6001
-#, fuzzy
-#| msgid ""
-#| "You can change this setting later on by running \"dpkg-reconfigure -plow "
-#| "glance-common\"."
 msgid ""
 "You can change this setting later on by running \"dpkg-reconfigure -plow "
 "gnocchi-common\"."
 msgstr ""
 "Vous pouvez modifier ce réglage plus tard en lançant « dpkg-reconfigure -"
-"plow glance-common »."
+"plow gnocchi-common »."
 
 #. Type: boolean
 #. Description
@@ -251,6 +242,6 @@ msgid ""
 "location. Please enter the zone that you wish to use when registering the "
 "endpoint."
 msgstr ""
-"OpenStack supporte l'utilisation de zones disponibles, avec chaque région "
+"OpenStack gère l'utilisation de zones disponibles, avec chaque région "
 "représentant un lieu. Veuillez entrer une zone que vous souhaitez utiliser "
 "lors de l'enregistrement d'un point d'accès."

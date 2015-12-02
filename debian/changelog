@@ -1,3 +1,9 @@
+gnocchi (1.3.0-4) unstable; urgency=medium
+
+  * French debconf templates translation update (Closes: #806506).
+
+ -- Thomas Goirand <zigo@debian.org>  Wed, 02 Dec 2015 10:21:02 +0100
+
 gnocchi (1.3.0-3) unstable; urgency=medium
 
   * Added missing dbconfig-common dependency (Closes: #806538).
