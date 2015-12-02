@@ -123,6 +123,7 @@ Description: Metric as a Service - Python 2.x
 Package: gnocchi-common
 Architecture: all
 Depends: adduser,
+         dbconfig-common,
          debconf,
          python-gnocchi (= ${binary:Version}),
          ${misc:Depends},
