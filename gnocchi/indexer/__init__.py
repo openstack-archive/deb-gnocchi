@@ -13,6 +13,7 @@
 # WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 # License for the specific language governing permissions and limitations
 # under the License.
+import fnmatch
 import hashlib
 
 from oslo_config import cfg
@@ -128,6 +129,15 @@ class NoSuchArchivePolicyRule(IndexerException):
             "Archive policy rule %s does not exist" %
             str(archive_policy_rule))
         self.archive_policy_rule = archive_policy_rule
+
+
+class NoArchivePolicyRuleMatch(IndexerException):
+    """Error raised when no archive policy rule found for metric."""
+    def __init__(self, metric_name):
+        super(NoArchivePolicyRuleMatch, self).__init__(
+            "No Archive policy rule found for metric %s" %
+            str(metric_name))
+        self.metric_name = metric_name
 
 
 class NamedMetricAlreadyExists(IndexerException):
@@ -292,7 +302,7 @@ class IndexerDriver(object):
         raise exceptions.NotImplementedError
 
     @staticmethod
-    def list_metrics(user_id=None, project_id=None):
+    def list_metrics(user_id=None, project_id=None, details=False, **kwargs):
         raise exceptions.NotImplementedError
 
     @staticmethod
@@ -309,6 +319,7 @@ class IndexerDriver(object):
     def update_resource(resource_type, resource_id, ended_at=_marker,
                         metrics=_marker,
                         append_metrics=False,
+                        create_revision=True,
                         **kwargs):
         raise exceptions.NotImplementedError
 
@@ -323,3 +334,11 @@ class IndexerDriver(object):
     @staticmethod
     def expunge_metric(id):
         raise exceptions.NotImplementedError
+
+    def get_archive_policy_for_metric(self, metric_name):
+        """Helper to get the archive policy according archive policy rules."""
+        rules = self.list_archive_policy_rules()
+        for rule in rules:
+            if fnmatch.fnmatch(metric_name or "", rule.metric_pattern):
+                return self.get_archive_policy(rule.archive_policy_name)
+        raise NoArchivePolicyRuleMatch(metric_name)

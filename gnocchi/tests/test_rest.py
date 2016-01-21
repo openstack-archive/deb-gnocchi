@@ -148,7 +148,7 @@ class TestingApp(webtest.TestApp):
         if self.auth:
             req.headers['X-Auth-Token'] = self.token
         response = super(TestingApp, self).do_request(req, *args, **kwargs)
-        self.storage.process_background_tasks(self.indexer)
+        self.storage.process_background_tasks(self.indexer, True)
         return response
 
 
@@ -1216,8 +1216,7 @@ class ResourceTest(RestTest):
         self.assertTrue(uuid.UUID(result['metrics']['foo']))
         self.assertIsNone(result['revision_end'])
         self.assertIsNone(r['revision_end'])
-        self.assertEqual(result['revision_start'],
-                         "2014-01-02T06:49:00+00:00")
+        self.assertEqual(result['revision_start'], "2014-01-01T10:23:00+00:00")
         self.assertEqual(r['revision_start'], "2014-01-01T10:23:00+00:00")
 
         del result['metrics']

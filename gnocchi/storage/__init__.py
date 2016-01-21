@@ -149,17 +149,31 @@ class StorageDriver(object):
     def stop():
         pass
 
-    def process_background_tasks(self, index):
+    def process_background_tasks(self, index, sync=False):
+        """Process background tasks for this storage.
+
+        This calls :func:`process_measures` to process new measures and
+        :func:`expunge_metrics` to expunge deleted metrics.
+
+        :param index: An indexer to be used for querying metrics
+        :param sync: If True, then process everything synchronously and raise
+                     on error
+        :type sync: bool
+        """
         LOG.debug("Processing new and to delete measures")
         try:
-            self.process_measures(index)
+            self.process_measures(index, sync)
         except Exception:
+            if sync:
+                raise
             LOG.error("Unexpected error during measures processing",
                       exc_info=True)
         LOG.debug("Expunging deleted metrics")
         try:
             self.expunge_metrics(index)
         except Exception:
+            if sync:
+                raise
             LOG.error("Unexpected error during deleting metrics",
                       exc_info=True)
 
@@ -171,8 +185,9 @@ class StorageDriver(object):
             except Exception:
                 LOG.error("Unable to expunge metric %s from storage" % m,
                           exc_info=True)
+                continue
             try:
-                self.index.expunge_metric(m.id)
+                index.expunge_metric(m.id)
             except indexer.NoSuchMetric:
                 # It's possible another process deleted the metric in the mean
                 # time, not a big deal
@@ -188,7 +203,7 @@ class StorageDriver(object):
         raise exceptions.NotImplementedError
 
     @staticmethod
-    def process_measures(indexer=None):
+    def process_measures(indexer=None, sync=False):
         """Process added measures in background.
 
         Some drivers might need to have a background task running that process

@@ -221,9 +221,9 @@ class SQLAlchemyIndexer(indexer.IndexerDriver):
         return m
 
     def list_metrics(self, user_id=None, project_id=None, details=False,
-                     **kwargs):
+                     status='active', **kwargs):
         session = self.engine_facade.get_session()
-        q = session.query(Metric).filter(Metric.status == 'active')
+        q = session.query(Metric).filter(Metric.status == status)
         if user_id is not None:
             q = q.filter(Metric.created_by_user_id == user_id)
         if project_id is not None:
@@ -281,10 +281,8 @@ class SQLAlchemyIndexer(indexer.IndexerDriver):
     def update_resource(self, resource_type,
                         resource_id, ended_at=_marker, metrics=_marker,
                         append_metrics=False,
+                        create_revision=True,
                         **kwargs):
-
-        now = utils.utcnow()
-
         resource_cls = self._resource_type_to_class(resource_type)
         resource_history_cls = self._resource_type_to_class(resource_type,
                                                             "history")
@@ -302,12 +300,15 @@ class SQLAlchemyIndexer(indexer.IndexerDriver):
                 if r is None:
                     raise indexer.NoSuchResource(resource_id)
 
-                # Build history
-                rh = resource_history_cls()
-                for col in sqlalchemy.inspect(resource_cls).columns:
-                    setattr(rh, col.name, getattr(r, col.name))
-                rh.revision_end = now
-                session.add(rh)
+                if create_revision:
+                    # Build history
+                    rh = resource_history_cls()
+                    for col in sqlalchemy.inspect(resource_cls).columns:
+                        setattr(rh, col.name, getattr(r, col.name))
+                    now = utils.utcnow()
+                    rh.revision_end = now
+                    session.add(rh)
+                    r.revision_start = now
 
                 # Update the resource
                 if ended_at is not _marker:
@@ -319,8 +320,6 @@ class SQLAlchemyIndexer(indexer.IndexerDriver):
                                 raise indexer.ResourceValueError(
                                     resource_type, "ended_at", ended_at)
                     r.ended_at = ended_at
-
-                r.revision_start = now
 
                 if kwargs:
                     for attribute, value in six.iteritems(kwargs):
@@ -544,7 +543,7 @@ class SQLAlchemyIndexer(indexer.IndexerDriver):
 
     def expunge_metric(self, id):
         session = self.engine_facade.get_session()
-        if session.query(Metric).filter(Metric.id == id).delete == 0:
+        if session.query(Metric).filter(Metric.id == id).delete() == 0:
             raise indexer.NoSuchMetric(id)
 
     def delete_metric(self, id):

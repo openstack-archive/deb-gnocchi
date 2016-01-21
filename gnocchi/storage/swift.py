@@ -52,6 +52,10 @@ OPTS = [
     cfg.StrOpt('swift_container_prefix',
                default='gnocchi',
                help='Prefix to namespace metric containers.'),
+    cfg.IntOpt('swift_timeout',
+               min=0,
+               default=300,
+               help='Connection timeout in seconds.'),
 ]
 
 
@@ -68,7 +72,8 @@ class SwiftStorage(_carbonara.CarbonaraBasedStorage):
             preauthtoken=conf.swift_preauthtoken,
             user=conf.swift_user,
             key=conf.swift_key,
-            tenant_name=conf.swift_tenant_name)
+            tenant_name=conf.swift_tenant_name,
+            timeout=conf.swift_timeout)
         self._lock = _carbonara.CarbonaraBasedStorageToozLock(conf)
         self._container_prefix = conf.swift_container_prefix
         self.swift.put_container(self.MEASURE_PREFIX)
@@ -98,19 +103,21 @@ class SwiftStorage(_carbonara.CarbonaraBasedStorage):
 
     def _list_metric_with_measures_to_process(self):
         headers, files = self.swift.get_container(self.MEASURE_PREFIX,
-                                                  delimiter='/')
+                                                  delimiter='/',
+                                                  full_listing=True)
         return set(f['subdir'][:-1] for f in files if 'subdir' in f)
 
     def _list_measure_files_for_metric_id(self, metric_id):
         headers, files = self.swift.get_container(
-            self.MEASURE_PREFIX, path=six.text_type(metric_id))
+            self.MEASURE_PREFIX, path=six.text_type(metric_id),
+            full_listing=True)
         return files
 
     def _pending_measures_to_process_count(self, metric_id):
         return len(self._list_measure_files_for_metric_id(metric_id))
 
     def _delete_unprocessed_measures_for_metric_id(self, metric_id):
-        files = self._list_measure_files_for_metric(metric_id)
+        files = self._list_measure_files_for_metric_id(metric_id)
         for f in files:
             self.swift.delete_object(self.MEASURE_PREFIX, f['name'])
 
@@ -134,6 +141,7 @@ class SwiftStorage(_carbonara.CarbonaraBasedStorage):
         self.swift.put_object(self._container_name(metric), aggregation, data)
 
     def _delete_metric(self, metric):
+        self._delete_unaggregated_timeserie(metric)
         for aggregation in metric.archive_policy.aggregation_methods:
             try:
                 self.swift.delete_object(self._container_name(metric),
@@ -166,3 +174,10 @@ class SwiftStorage(_carbonara.CarbonaraBasedStorage):
                 raise storage.AggregationDoesNotExist(metric, aggregation)
             raise
         return contents
+
+    def _delete_unaggregated_timeserie(self, metric):
+        try:
+            self.swift.delete_object(self._container_name(metric), "none")
+        except swclient.ClientException as e:
+            if e.http_status != 404:
+                raise

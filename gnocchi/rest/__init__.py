@@ -13,7 +13,6 @@
 # WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 # License for the specific language governing permissions and limitations
 # under the License.
-import fnmatch
 import uuid
 
 from oslo_log import log
@@ -530,9 +529,9 @@ def UUID(value):
 
 
 class MetricsController(rest.RestController):
-    @staticmethod
+
     @pecan.expose()
-    def _lookup(id, *remainder):
+    def _lookup(self, id, *remainder):
         try:
             metric_id = uuid.UUID(id)
         except ValueError:
@@ -559,14 +558,9 @@ class MetricsController(rest.RestController):
 
         name = definition.get('name')
         if archive_policy_name is None:
-            rules = pecan.request.indexer.list_archive_policy_rules()
-            for rule in rules:
-                if fnmatch.fnmatch(name or "", rule.metric_pattern):
-                    ap = pecan.request.indexer.get_archive_policy(
-                        rule.archive_policy_name)
-                    definition['archive_policy_name'] = ap.name
-                    break
-            else:
+            try:
+                ap = pecan.request.indexer.get_archive_policy_for_metric(name)
+            except indexer.NoArchivePolicyRuleMatch:
                 # NOTE(jd) Since this is a schema-like function, we
                 # should/could raise ValueError, but if we do so, voluptuous
                 # just returns a "invalid value" with no useful message – so we
@@ -575,6 +569,8 @@ class MetricsController(rest.RestController):
                 abort(400, "No archive policy name specified "
                       "and no archive policy rule found matching "
                       "the metric name %s" % name)
+            else:
+                definition['archive_policy_name'] = ap.name
 
         user_id, project_id = get_user_and_project()
 
@@ -675,7 +671,8 @@ class NamedMetricController(rest.RestController):
         try:
             pecan.request.indexer.update_resource(
                 self.resource_type, self.resource_id, metrics=metrics,
-                append_metrics=True)
+                append_metrics=True,
+                create_revision=False)
         except (indexer.NoSuchMetric,
                 indexer.NoSuchArchivePolicy,
                 ValueError) as e:
@@ -807,20 +804,29 @@ class GenericResourceController(rest.RestController):
 
         body = deserialize_and_validate(self.Resource, required=False)
 
-        if not self._resource_need_update(resource, body):
-            # No need to go further, we assume the db resource
-            # doesn't change between the get and update
-            return resource
         if len(body) == 0:
             etag_set_headers(resource)
             return resource
+
+        for k, v in six.iteritems(body):
+            if k != 'metrics' and getattr(resource, k) != v:
+                create_revision = True
+                break
+        else:
+            if 'metrics' not in body:
+                # No need to go further, we assume the db resource
+                # doesn't change between the get and update
+                return resource
+            create_revision = False
 
         try:
             if 'metrics' in body:
                 user, project = get_user_and_project()
             resource = pecan.request.indexer.update_resource(
                 self._resource_type,
-                self.id, **body)
+                self.id,
+                create_revision=create_revision,
+                **body)
         except (indexer.NoSuchMetric,
                 indexer.NoSuchArchivePolicy,
                 ValueError) as e:
@@ -829,15 +835,6 @@ class GenericResourceController(rest.RestController):
             abort(404, e)
         etag_set_headers(resource)
         return resource
-
-    @staticmethod
-    def _resource_need_update(resource, new_attributes):
-        if 'metrics' in new_attributes:
-            return True
-        for k, v in new_attributes.items():
-            if getattr(resource, k) != v:
-                return True
-        return False
 
     @pecan.expose()
     def delete(self):

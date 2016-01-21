@@ -1,6 +1,6 @@
 # -*- encoding: utf-8 -*-
 #
-# Copyright 2014-2015 Openstack Foundation
+# Copyright 2014-2015 OpenStack Foundation
 #
 # Licensed under the Apache License, Version 2.0 (the "License"); you may
 # not use this file except in compliance with the License. You may obtain
@@ -60,7 +60,7 @@ class TestAggregates(tests_base.TestCase):
 
         with mock.patch.object(self.index, 'get_metrics') as f:
             f.return_value = [metric]
-            self.storage.process_background_tasks(self.index)
+            self.storage.process_background_tasks(self.index, True)
 
         return metric
 
