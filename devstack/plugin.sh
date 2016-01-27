@@ -18,7 +18,6 @@
 # - ``SERVICE_{TENANT_NAME|PASSWORD}`` must be defined
 # - ``SERVICE_HOST``
 # - ``OS_AUTH_URL``, ``KEYSTONE_SERVICE_URI`` for auth in api
-# - ``CEILOMETER_CONF`` for ceilometer dispatcher configuration
 
 # stack.sh
 # ---------
@@ -66,9 +65,9 @@ function create_gnocchi_accounts {
                 "metric" "OpenStack Metric Service")
             get_or_create_endpoint $gnocchi_service \
                 "$REGION_NAME" \
-                "$(gnocchi_service_url)/" \
-                "$(gnocchi_service_url)/" \
-                "$(gnocchi_service_url)/"
+                "$(gnocchi_service_url)" \
+                "$(gnocchi_service_url)" \
+                "$(gnocchi_service_url)"
         fi
         if is_service_enabled swift && [[ "$GNOCCHI_STORAGE_BACKEND" = 'swift' ]] ; then
             get_or_create_project "gnocchi_swift" default
@@ -238,6 +237,12 @@ function configure_gnocchi {
     # Configure auth token middleware
     configure_auth_token_middleware $GNOCCHI_CONF gnocchi $GNOCCHI_AUTH_CACHE_DIR
 
+    if is_service_enabled gnocchi-statsd ; then
+        iniset $GNOCCHI_CONF statsd resource_id $GNOCCHI_STATSD_RESOURCE_ID
+        iniset $GNOCCHI_CONF statsd project_id $GNOCCHI_STATSD_PROJECT_ID
+        iniset $GNOCCHI_CONF statsd user_id $GNOCCHI_STATSD_USER_ID
+    fi
+
     # Configure the storage driver
     if is_service_enabled ceph && [[ "$GNOCCHI_STORAGE_BACKEND" = 'ceph' ]] ; then
         iniset $GNOCCHI_CONF storage driver ceph
@@ -268,6 +273,8 @@ function configure_gnocchi {
             iniset $GNOCCHI_CONF cors allowed_origin ${GRAFANA_URL}
             iniset $GNOCCHI_CONF cors allow_methods GET,POST,PUT,DELETE,OPTIONS,HEAD,PATCH
             iniset $GNOCCHI_CONF cors allow_headers Content-Type,Cache-Control,Content-Language,Expires,Last-Modified,Pragma,X-Auth-Token,X-Subject-Token
+        else
+            iniset $GNOCCHI_PASTE_CONF pipeline:main pipeline "keystone_authtoken gnocchi"
         fi
     else
         iniset $GNOCCHI_PASTE_CONF pipeline:main pipeline gnocchi
@@ -294,25 +301,6 @@ function configure_ceph_gnocchi {
     sudo chown ${STACK_USER}:$(id -g -n $whoami) ${CEPH_CONF_DIR}/ceph.client.${GNOCCHI_CEPH_USER}.keyring
 }
 
-function configure_ceilometer_gnocchi {
-    gnocchi_url=$(gnocchi_service_url)
-    iniset $CEILOMETER_CONF DEFAULT dispatcher gnocchi
-    iniset $CEILOMETER_CONF alarms gnocchi_url $gnocchi_url
-    iniset $CEILOMETER_CONF dispatcher_gnocchi url $gnocchi_url
-    iniset $CEILOMETER_CONF dispatcher_gnocchi archive_policy ${GNOCCHI_ARCHIVE_POLICY}
-    if is_service_enabled swift && [[ "$GNOCCHI_STORAGE_BACKEND" = 'swift' ]] ; then
-        iniset $CEILOMETER_CONF dispatcher_gnocchi filter_service_activity "True"
-        iniset $CEILOMETER_CONF dispatcher_gnocchi filter_project "gnocchi_swift"
-    else
-        iniset $CEILOMETER_CONF dispatcher_gnocchi filter_service_activity "False"
-    fi
-}
-
-function configure_aodh_gnocchi {
-    gnocchi_url=$(gnocchi_service_url)
-    iniset $AODH_CONF DEFAULT gnocchi_url $gnocchi_url
-}
-
 
 # init_gnocchi() - Initialize etc.
 function init_gnocchi {
@@ -323,7 +311,16 @@ function init_gnocchi {
 
     if is_service_enabled mysql postgresql; then
         recreate_database gnocchi
-        $GNOCCHI_BIN_DIR/gnocchi-dbsync
+    fi
+    $GNOCCHI_BIN_DIR/gnocchi-upgrade
+}
+
+function preinstall_gnocchi {
+    # Needed to build psycopg2
+    if is_ubuntu; then
+        install_package libpq-dev
+    else
+        install_package postgresql-devel
     fi
 }
 
@@ -354,8 +351,10 @@ function install_gnocchi {
 
     install_gnocchiclient
 
+    is_service_enabled key && EXTRA_FLAVOR=,keystonmiddleware
+
     # We don't use setup_package because we don't follow openstack/requirements
-    sudo -H pip install -e "$GNOCCHI_DIR"
+    sudo -H pip install -e "$GNOCCHI_DIR"[test,$GNOCCHI_STORAGE_BACKEND,${DATABASE_TYPE}${EXTRA_FLAVOR}]
 
     if [ "$GNOCCHI_USE_MOD_WSGI" == "True" ]; then
         install_apache_wsgi
@@ -396,7 +395,6 @@ function start_gnocchi {
     fi
 
     # Create a default policy
-    archive_policy_url="$(gnocchi_service_url)/v1/archive_policy"
     if ! is_service_enabled key; then
         export OS_AUTH_TYPE=gnocchi-noauth
         export GNOCCHI_USER_ID=`uuidgen`
@@ -412,6 +410,7 @@ function start_gnocchi {
 
     # run metricd last so we are properly waiting for swift and friends
     run_process gnocchi-metricd "$GNOCCHI_BIN_DIR/gnocchi-metricd -d -v --config-file $GNOCCHI_CONF"
+    run_process gnocchi-statsd "$GNOCCHI_BIN_DIR/gnocchi-statsd -d -v --config-file $GNOCCHI_CONF"
 }
 
 # stop_gnocchi() - Stop running processes
@@ -445,14 +444,6 @@ if is_service_enabled gnocchi-api; then
         echo_summary "Configuring Gnocchi"
         configure_gnocchi
         create_gnocchi_accounts
-        if is_service_enabled ceilometer; then
-            echo_summary "Configuring Ceilometer for gnocchi"
-            configure_ceilometer_gnocchi
-        fi
-        if is_service_enabled aodh; then
-            echo_summary "Configuring Aodh for gnocchi"
-            configure_aodh_gnocchi
-        fi
         if is_service_enabled ceph && [[ "$GNOCCHI_STORAGE_BACKEND" = 'ceph' ]] ; then
             echo_summary "Configuring Gnocchi for Ceph"
             configure_ceph_gnocchi

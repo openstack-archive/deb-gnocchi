@@ -1,7 +1,5 @@
 # -*- encoding: utf-8 -*-
 #
-# Copyright © 2014-2015 eNovance
-#
 # Licensed under the Apache License, Version 2.0 (the "License"); you may
 # not use this file except in compliance with the License. You may obtain
 # a copy of the License at
@@ -16,6 +14,7 @@
 import itertools
 
 from oslo_config import cfg
+import uuid
 
 import gnocchi.archive_policy
 import gnocchi.indexer
@@ -38,20 +37,15 @@ def list_opts():
             cfg.StrOpt('paste_config',
                        default='api-paste.ini',
                        help='Path to API Paste configuration.'),
-            cfg.IntOpt('port',
-                       default=8041,
-                       help='The port for the Gnocchi API server.'),
+            cfg.PortOpt('port',
+                        default=8041,
+                        help='The port for the Gnocchi API server.'),
             cfg.StrOpt('host',
                        default='0.0.0.0',
                        help='The listen IP for the Gnocchi API server.'),
             cfg.BoolOpt('pecan_debug',
                         default=False,
                         help='Toggle Pecan Debug Middleware.'),
-            cfg.MultiStrOpt(
-                'middlewares',
-                deprecated_for_removal=True,
-                default=[],
-                help='Middlewares to use. Use Paste config instead.',),
             cfg.IntOpt('workers', min=1,
                        help='Number of workers for Gnocchi API server. '
                        'By default the available number of CPU is used.'),
@@ -67,20 +61,30 @@ def list_opts():
                                     gnocchi.storage.swift.OPTS,
                                     gnocchi.storage.influxdb.OPTS)),
         ("statsd", (
-            cfg.StrOpt(
+            cfg.StrOpt('host',
+                       default='0.0.0.0',
+                       help='The listen IP for statsd'),
+            cfg.PortOpt('port',
+                        default=8125,
+                        help='The port for statsd'),
+            cfg.Opt(
                 'resource_id',
+                type=uuid.UUID,
                 help='Resource UUID to use to identify statsd in Gnocchi'),
-            cfg.StrOpt(
+            cfg.Opt(
                 'user_id',
+                type=uuid.UUID,
                 help='User UUID to use to identify statsd in Gnocchi'),
-            cfg.StrOpt(
+            cfg.Opt(
                 'project_id',
+                type=uuid.UUID,
                 help='Project UUID to use to identify statsd in Gnocchi'),
             cfg.StrOpt(
                 'archive_policy_name',
                 help='Archive policy name to use when creating metrics'),
             cfg.FloatOpt(
                 'flush_delay',
+                default=10,
                 help='Delay between flushes'),
         )),
         ("archive_policy", gnocchi.archive_policy.OPTS),

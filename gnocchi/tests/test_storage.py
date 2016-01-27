@@ -17,9 +17,12 @@ import datetime
 import uuid
 
 import mock
+from oslo_utils import timeutils
+from oslotest import base
 import six.moves
 
 from gnocchi import storage
+from gnocchi.storage import _carbonara
 from gnocchi.storage import null
 from gnocchi.tests import base as tests_base
 from gnocchi import utils
@@ -39,6 +42,9 @@ class TestStorageDriver(tests_base.TestCase):
 
     @mock.patch('gnocchi.storage._carbonara.LOG')
     def test_corrupted_data(self, logger):
+        if not isinstance(self.storage, _carbonara.CarbonaraBasedStorage):
+            self.skipTest("This driver is not based on Carbonara")
+
         self.storage.add_measures(self.metric, [
             storage.Measure(datetime.datetime(2014, 1, 1, 12, 0, 1), 69),
         ])
@@ -56,18 +62,6 @@ class TestStorageDriver(tests_base.TestCase):
                 with mock.patch('gnocchi.carbonara.msgpack.loads',
                                 side_effect=ValueError("boom!")):
                     self.storage.process_background_tasks(self.index, True)
-
-        expected_calls = [
-            mock.call.debug('Processing measures for %s' % self.metric.id),
-            mock.call.debug('Processing measures for %s' % self.metric.id),
-        ]
-        aggs = ["none"] + self.conf.archive_policy.default_aggregation_methods
-        for agg in aggs:
-            expected_calls.append(mock.call.error(
-                'Data are corrupted for metric %s and aggregation %s, '
-                'recreating an empty timeserie.' % (self.metric.id, agg)))
-
-        logger.assert_has_calls(expected_calls, any_order=True)
 
         self.assertEqual([
             (utils.datetime_utc(2014, 1, 1), 86400.0, 1),
@@ -89,15 +83,6 @@ class TestStorageDriver(tests_base.TestCase):
         self.storage.add_measures(self.metric, [
             storage.Measure(datetime.datetime(2014, 1, 1, 12, 0, 1), 69),
         ])
-        self.storage.delete_metric(self.metric)
-
-    def test_delete_nonempty_metric_with_process(self):
-        self.storage.add_measures(self.metric, [
-            storage.Measure(datetime.datetime(2014, 1, 1, 12, 0, 1), 69),
-        ])
-        with mock.patch.object(self.index, 'get_metrics') as f:
-            f.return_value = [self.metric]
-            self.storage.process_background_tasks(self.index)
         self.storage.delete_metric(self.metric)
         self.storage.process_background_tasks(self.index, True)
 
@@ -159,6 +144,8 @@ class TestStorageDriver(tests_base.TestCase):
         ], self.storage.get_measures(self.metric))
 
         self.assertEqual([
+            (utils.datetime_utc(2014, 1, 1), 86400.0, 39.75),
+            (utils.datetime_utc(2014, 1, 1, 12), 3600.0, 39.75),
             (utils.datetime_utc(2014, 1, 1, 12, 10), 300.0, 44.0),
         ], self.storage.get_measures(
             self.metric,
@@ -173,14 +160,17 @@ class TestStorageDriver(tests_base.TestCase):
             self.metric,
             to_timestamp=datetime.datetime(2014, 1, 1, 12, 6, 0)))
 
-        self.assertEqual(
-            [],
-            self.storage.get_measures(
-                self.metric,
-                to_timestamp=datetime.datetime(2014, 1, 1, 12, 10, 10),
-                from_timestamp=datetime.datetime(2014, 1, 1, 12, 10, 10)))
+        self.assertEqual([
+            (utils.datetime_utc(2014, 1, 1), 86400.0, 39.75),
+            (utils.datetime_utc(2014, 1, 1, 12), 3600.0, 39.75),
+            (utils.datetime_utc(2014, 1, 1, 12, 10), 300.0, 44.0),
+        ], self.storage.get_measures(
+            self.metric,
+            to_timestamp=datetime.datetime(2014, 1, 1, 12, 10, 10),
+            from_timestamp=datetime.datetime(2014, 1, 1, 12, 10, 10)))
 
         self.assertEqual([
+            (utils.datetime_utc(2014, 1, 1), 86400.0, 39.75),
             (utils.datetime_utc(2014, 1, 1, 12), 3600.0, 39.75),
             (utils.datetime_utc(2014, 1, 1, 12), 300.0, 69.0),
         ], self.storage.get_measures(
@@ -189,12 +179,21 @@ class TestStorageDriver(tests_base.TestCase):
             to_timestamp=datetime.datetime(2014, 1, 1, 12, 0, 2)))
 
         self.assertEqual([
+            (utils.datetime_utc(2014, 1, 1), 86400.0, 39.75),
+            (utils.datetime_utc(2014, 1, 1, 12), 3600.0, 39.75),
+            (utils.datetime_utc(2014, 1, 1, 12), 300.0, 69.0),
+        ], self.storage.get_measures(
+            self.metric,
+            from_timestamp=timeutils.parse_isotime("2014-1-1 13:00:00+01:00"),
+            to_timestamp=datetime.datetime(2014, 1, 1, 12, 0, 2)))
+
+        self.assertEqual([
             (utils.datetime_utc(2014, 1, 1, 12), 3600.0, 39.75),
         ], self.storage.get_measures(
             self.metric,
             from_timestamp=datetime.datetime(2014, 1, 1, 12, 0, 0),
             to_timestamp=datetime.datetime(2014, 1, 1, 12, 0, 2),
-            granularity=3600))
+            granularity=3600.0))
 
         self.assertEqual([
             (utils.datetime_utc(2014, 1, 1, 12), 300.0, 69.0),
@@ -202,10 +201,12 @@ class TestStorageDriver(tests_base.TestCase):
             self.metric,
             from_timestamp=datetime.datetime(2014, 1, 1, 12, 0, 0),
             to_timestamp=datetime.datetime(2014, 1, 1, 12, 0, 2),
-            granularity=300))
+            granularity=300.0))
 
-        self.assertEqual([], self.storage.get_measures(self.metric,
-                                                       granularity=42))
+        self.assertRaises(storage.GranularityDoesNotExist,
+                          self.storage.get_measures,
+                          self.metric,
+                          granularity=42)
 
     def test_get_cross_metric_measures_unknown_metric(self):
         self.assertEqual([],
@@ -245,6 +246,26 @@ class TestStorageDriver(tests_base.TestCase):
                           self.storage.get_cross_metric_measures,
                           [self.metric, metric2],
                           aggregation='last')
+
+    def test_get_cross_metric_measures_unknown_granularity(self):
+        metric2 = storage.Metric(uuid.uuid4(),
+                                 self.archive_policies['low'])
+        self.storage.add_measures(self.metric, [
+            storage.Measure(datetime.datetime(2014, 1, 1, 12, 0, 1), 69),
+            storage.Measure(datetime.datetime(2014, 1, 1, 12, 7, 31), 42),
+            storage.Measure(datetime.datetime(2014, 1, 1, 12, 9, 31), 4),
+            storage.Measure(datetime.datetime(2014, 1, 1, 12, 12, 45), 44),
+        ])
+        self.storage.add_measures(metric2, [
+            storage.Measure(datetime.datetime(2014, 1, 1, 12, 0, 1), 69),
+            storage.Measure(datetime.datetime(2014, 1, 1, 12, 7, 31), 42),
+            storage.Measure(datetime.datetime(2014, 1, 1, 12, 9, 31), 4),
+            storage.Measure(datetime.datetime(2014, 1, 1, 12, 12, 45), 44),
+        ])
+        self.assertRaises(storage.GranularityDoesNotExist,
+                          self.storage.get_cross_metric_measures,
+                          [self.metric, metric2],
+                          granularity=12345.456)
 
     def test_add_and_get_cross_metric_measures_different_archives(self):
         metric2 = storage.Metric(uuid.uuid4(),
@@ -297,7 +318,9 @@ class TestStorageDriver(tests_base.TestCase):
         values = self.storage.get_cross_metric_measures(
             [self.metric, metric2], from_timestamp='2014-01-01 12:10:00')
         self.assertEqual([
-            (utils.datetime_utc(2014, 1, 1, 12, 10, 0), 300.0, 24.0)
+            (utils.datetime_utc(2014, 1, 1), 86400.0, 22.25),
+            (utils.datetime_utc(2014, 1, 1, 12), 3600.0, 22.25),
+            (utils.datetime_utc(2014, 1, 1, 12, 10, 0), 300.0, 24.0),
         ], values)
 
         values = self.storage.get_cross_metric_measures(
@@ -313,7 +336,11 @@ class TestStorageDriver(tests_base.TestCase):
             [self.metric, metric2],
             to_timestamp='2014-01-01 12:10:10',
             from_timestamp='2014-01-01 12:10:10')
-        self.assertEqual([], values)
+        self.assertEqual([
+            (utils.datetime_utc(2014, 1, 1), 86400.0, 22.25),
+            (utils.datetime_utc(2014, 1, 1, 12), 3600.0, 22.25),
+            (utils.datetime_utc(2014, 1, 1, 12, 10), 300.0, 24.0),
+        ], values)
 
         values = self.storage.get_cross_metric_measures(
             [self.metric, metric2],
@@ -321,7 +348,18 @@ class TestStorageDriver(tests_base.TestCase):
             to_timestamp='2014-01-01 12:00:01')
 
         self.assertEqual([
+            (utils.datetime_utc(2014, 1, 1), 86400.0, 22.25),
             (utils.datetime_utc(2014, 1, 1, 12, 0, 0), 3600.0, 22.25),
+            (utils.datetime_utc(2014, 1, 1, 12, 0, 0), 300.0, 39.0),
+        ], values)
+
+        values = self.storage.get_cross_metric_measures(
+            [self.metric, metric2],
+            from_timestamp='2014-01-01 12:00:00',
+            to_timestamp='2014-01-01 12:00:01',
+            granularity=300.0)
+
+        self.assertEqual([
             (utils.datetime_utc(2014, 1, 1, 12, 0, 0), 300.0, 39.0),
         ], values)
 
@@ -377,10 +415,14 @@ class TestStorageDriver(tests_base.TestCase):
 
         self.assertEqual(
             {metric2: [],
-             self.metric: [(utils.datetime_utc(2014, 1, 1, 12), 300, 69)]},
+             self.metric: [
+                 (utils.datetime_utc(2014, 1, 1), 86400, 33),
+                 (utils.datetime_utc(2014, 1, 1, 12), 3600, 33),
+                 (utils.datetime_utc(2014, 1, 1, 12), 300, 69),
+                 (utils.datetime_utc(2014, 1, 1, 12, 10), 300, 42)]},
             self.storage.search_value(
                 [metric2, self.metric],
-                {u"≥": 50}))
+                {u"≥": 30}))
 
         self.assertEqual(
             {metric2: [], self.metric: []},
@@ -389,3 +431,63 @@ class TestStorageDriver(tests_base.TestCase):
                 {u"∧": [
                     {u"eq": 100},
                     {u"≠": 50}]}))
+
+
+class TestMeasureQuery(base.BaseTestCase):
+    def test_equal(self):
+        q = storage.MeasureQuery({"=": 4})
+        self.assertTrue(q(4))
+        self.assertFalse(q(40))
+
+    def test_gt(self):
+        q = storage.MeasureQuery({">": 4})
+        self.assertTrue(q(40))
+        self.assertFalse(q(4))
+
+    def test_and(self):
+        q = storage.MeasureQuery({"and": [{">": 4}, {"<": 10}]})
+        self.assertTrue(q(5))
+        self.assertFalse(q(40))
+        self.assertFalse(q(1))
+
+    def test_or(self):
+        q = storage.MeasureQuery({"or": [{"=": 4}, {"=": 10}]})
+        self.assertTrue(q(4))
+        self.assertTrue(q(10))
+        self.assertFalse(q(-1))
+
+    def test_modulo(self):
+        q = storage.MeasureQuery({"=": [{"%": 5}, 0]})
+        self.assertTrue(q(5))
+        self.assertTrue(q(10))
+        self.assertFalse(q(-1))
+        self.assertFalse(q(6))
+
+    def test_math(self):
+        q = storage.MeasureQuery(
+            {
+                u"and": [
+                    # v+5 is bigger 0
+                    {u"≥": [{u"+": 5}, 0]},
+                    # v-6 is not 5
+                    {u"≠": [5, {u"-": 6}]},
+                ],
+            }
+        )
+        self.assertTrue(q(5))
+        self.assertTrue(q(10))
+        self.assertFalse(q(11))
+
+    def test_empty(self):
+        q = storage.MeasureQuery({})
+        self.assertFalse(q(5))
+        self.assertFalse(q(10))
+
+    def test_bad_format(self):
+        self.assertRaises(storage.InvalidQuery,
+                          storage.MeasureQuery,
+                          {"foo": [{"=": 4}, {"=": 10}]})
+
+        self.assertRaises(storage.InvalidQuery,
+                          storage.MeasureQuery,
+                          {"=": [1, 2, 3]})

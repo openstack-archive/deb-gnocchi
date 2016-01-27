@@ -1,5 +1,6 @@
 enable_service gnocchi-api
 enable_service gnocchi-metricd
+enable_service gnocchi-statsd
 
 # Set up default directories
 GNOCCHI_DIR=$DEST/gnocchi
@@ -31,8 +32,10 @@ GNOCCHI_SERVICE_PORT=${GNOCCHI_SERVICE_PORT:-8041}
 GNOCCHI_SERVICE_PREFIX=${GNOCCHI_SERVICE_PREFIX:-'/metric'}
 GNOCCHI_SERVICE_HOST=$SERVICE_HOST
 
-# Gnocchi ceilometer default archive_policy
-GNOCCHI_ARCHIVE_POLICY=${GNOCCHI_ARCHIVE_POLICY:-low}
+# Gnocchi statsd info
+GNOCCHI_STATSD_RESOURCE_ID=${GNOCCHI_STATSD_RESOURCE_ID:-$(uuidgen)}
+GNOCCHI_STATSD_USER_ID=${GNOCCHI_STATSD_USER_ID:-$(uuidgen)}
+GNOCCHI_STATSD_PROJECT_ID=${GNOCCHI_STATSD_PROJECT_ID:-$(uuidgen)}
 
 # ceph gnochi info
 GNOCCHI_CEPH_USER=${GNOCCHI_CEPH_USER:-gnocchi}
@@ -45,12 +48,12 @@ GNOCCHI_STORAGE_BACKEND=${GNOCCHI_STORAGE_BACKEND:-file}
 
 # InfluxDB Settings
 GNOCCHI_INFLUXDB_DBNAME=${GNOCCHI_INFLUXDB_DBNAME:-gnocchidevstack}
-GNOCCHI_INFLUXDB_RPM_PKG=${GNOCCHI_INFLUXDB_RPM_PKG:-https://s3.amazonaws.com/influxdb/influxdb-0.9.4.1-1.x86_64.rpm}
-GNOCCHI_INFLUXDB_DEB_PKG=${GNOCCHI_INFLUXDB_DEB_PKG:-https://s3.amazonaws.com/influxdb/influxdb_0.9.4.1_amd64.deb}
+GNOCCHI_INFLUXDB_RPM_PKG=${GNOCCHI_INFLUXDB_RPM_PKG:-https://s3.amazonaws.com/influxdb/influxdb-0.9.4.2-1.x86_64.rpm}
+GNOCCHI_INFLUXDB_DEB_PKG=${GNOCCHI_INFLUXDB_DEB_PKG:-https://s3.amazonaws.com/influxdb/influxdb_0.9.4.2_amd64.deb}
 
 # Grafana settings
-GRAFANA_RPM_PKG=${GRAFANA_RPM_PKG:-https://grafanarel.s3.amazonaws.com/builds/grafana-2.1.3-1.x86_64.rpm}
-GRAFANA_DEB_PKG=${GRAFANA_DEB_PKG:-https://grafanarel.s3.amazonaws.com/builds/grafana_2.1.3_amd64.deb}
+GRAFANA_RPM_PKG=${GRAFANA_RPM_PKG:-https://grafanarel.s3.amazonaws.com/builds/grafana-2.6.0-1.x86_64.rpm}
+GRAFANA_DEB_PKG=${GRAFANA_DEB_PKG:-https://grafanarel.s3.amazonaws.com/builds/grafana_2.6.0_amd64.deb}
 GRAFANA_PLUGINS_DIR=${GRAFANA_PLUGINS_DIR:-$DEST/grafana-plugins}
-GRAFANA_PLUGINS_REPO=${GRAFANA_PLUGINS_REPO:-http://github.com/grafana/grafana-plugins.git}
+GRAFANA_PLUGINS_REPO=${GRAFANA_PLUGINS_REPO:-http://github.com/sileht/grafana-plugins-gnocchi.git}
 GRAFANA_URL=${GRAFANA_URL:-http://$HOST_IP:3000}

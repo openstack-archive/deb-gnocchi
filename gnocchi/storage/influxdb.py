@@ -36,9 +36,9 @@ OPTS = [
     cfg.StrOpt('influxdb_host',
                default='localhost',
                help='InfluxDB host'),
-    cfg.IntOpt('influxdb_port',
-               default=8086,
-               help='InfluxDB port'),
+    cfg.PortOpt('influxdb_port',
+                default=8086,
+                help='InfluxDB port'),
     cfg.StrOpt('influxdb_username',
                default='root',
                help='InfluxDB username'),
@@ -73,18 +73,6 @@ class InfluxDBStorage(storage.StorageDriver):
                                               conf.influxdb_password,
                                               conf.influxdb_database)
         self.database = conf.influxdb_database
-        try:
-            dbs = [db['name'] for db in self.influx.get_list_database()]
-            if conf.influxdb_database not in dbs:
-                self.influx.create_database(conf.influxdb_database)
-        except influxdb.client.InfluxDBClientError as e:
-            if "database already exists" in e.content:
-                LOG.warning("InfluxDB database \"%s\" already exists",
-                            self.database)
-            else:
-                LOG.warning('InfluxDB database creation failed: %s %s'
-                            % (e.message, e.code), exc_info=True)
-                raise
 
     @staticmethod
     def _get_metric_id(metric):
@@ -162,13 +150,12 @@ class InfluxDBStorage(storage.StorageDriver):
 
         metric_id = self._get_metric_id(metric)
 
-        result = self._query(metric, "select * from \"%(metric_id)s\"" %
-                             dict(metric_id=metric_id))
-        result = list(result[metric_id])
-
         if from_timestamp:
             first_measure_timestamp = from_timestamp
         else:
+            result = self._query(metric, "select * from \"%(metric_id)s\"" %
+                                 dict(metric_id=metric_id))
+            result = list(result[metric_id])
             if result:
                 first_measure_timestamp = self._timestamp_to_utc(
                     timeutils.parse_isotime(result[0]['time']))

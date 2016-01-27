@@ -1,19 +1,22 @@
-================================
- Gnocchi -- Metric as a Service
-================================
+==================================
+Gnocchi – Metric as a Service
+==================================
 
 .. image:: gnocchi-logo.jpg
+  :align: right
+  :width: 20%
+  :alt: Gnocchi logo
 
-Gnocchi is a multi-tenant timeseries, metrics and resources database. It
-provides an `HTTP REST`_ interface to create and manipulate those data. It is
-designed to store metrics at a very large scale while providing access to
-metrics and resources information to operators and users.
+.. include:: ../../README.rst
+   :start-line: 6
 
-Gnocchi is part of the `OpenStack` project. While Gnocchi has support for
-OpenStack, it is fully able to work stand-alone.
 
-A Brief History of Gnocchi
---------------------------
+Why Gnocchi?
+------------
+
+Gnocchi has been created to fulfill the need of a time series database usable
+in the context of cloud computing: providing the ability to store large
+quantities of metrics and being easily scalable.
 
 The Gnocchi project was started in 2014 as a spin-off of the `OpenStack
 Ceilometer`_ project to address the performance issues that Ceilometer
@@ -23,12 +26,23 @@ More information are available on `Julien's blog post on Gnocchi
 
 .. _`OpenStack Ceilometer`: http://launchpad.net/ceilometer
 
+
+Use cases
+---------
+Gnocchi is meant to be used to store time series and their associated resource
+metadata. It’s therefore useful for example as:
+
+- Storage brick for a billing system
+- Alarm-triggering or monitoring system
+- Statistical usage of data
+
 Key Features
-============
+------------
 
 - HTTP REST interface
 - Horizontal scalability
 - Metric aggregation
+- Measures batching support
 - Archiving policy
 - Metric value search
 - Structured resources
@@ -39,15 +53,19 @@ Key Features
 
 
 Documentation
-=============
+-------------
 
 .. toctree::
    :maxdepth: 1
 
+   architecture
    install
+   configuration
+   running
+   client
    rest
    statsd
+   grafana
    resource_types
 
-.. _`HTTP REST`: https://en.wikipedia.org/wiki/Representational_state_transfer
 .. _`OpenStack`: http://openstack.org

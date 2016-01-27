@@ -15,10 +15,11 @@
 # under the License.
 import fnmatch
 import hashlib
+import os
 
+import iso8601
 from oslo_config import cfg
 from oslo_utils import netutils
-import pytz
 import six
 from stevedore import driver
 
@@ -27,7 +28,8 @@ from gnocchi import exceptions
 OPTS = [
     cfg.StrOpt('url',
                secret=True,
-               default="null://",
+               required=True,
+               default=os.getenv("GNOCCHI_INDEXER_URL"),
                help='Indexer driver to use'),
 ]
 
@@ -66,7 +68,7 @@ class Resource(object):
     def lastmodified(self):
         # less precise revision start for Last-Modified http header
         return self.revision_start.replace(microsecond=0,
-                                           tzinfo=pytz.UTC)
+                                           tzinfo=iso8601.iso8601.UTC)
 
 
 def get_driver(conf):
@@ -81,11 +83,11 @@ class IndexerException(Exception):
     """Base class for all exceptions raised by an indexer."""
 
 
-class UnknownResourceType(IndexerException):
+class NoSuchResourceType(IndexerException):
     """Error raised when the resource type is unknown."""
     def __init__(self, type):
-        super(UnknownResourceType, self).__init__(
-            "Resource type %s is unknown" % type)
+        super(NoSuchResourceType, self).__init__(
+            "Resource type %s does not exist" % str(type))
         self.type = type
 
 
@@ -288,11 +290,12 @@ class IndexerDriver(object):
         raise exceptions.NotImplementedError
 
     @staticmethod
-    def get_metrics(uuids, active_only=True):
+    def get_metrics(uuids, active_only=True, with_resource=False):
         """Get metrics informations from the indexer.
 
         :param uuids: A list of metric UUID.
         :param active_only: Whether to only get active metrics
+        :param with_resource: Include resource details
         """
         raise exceptions.NotImplementedError
 

@@ -76,17 +76,15 @@ class ConfigFixture(fixture.GabbiFixture):
 
         data_tmp_dir = tempfile.mkdtemp(prefix='gnocchi')
 
-        conf = service.prepare_service([])
+        if os.getenv("GABBI_LIVE"):
+            dcf = None
+        else:
+            dcf = []
+        conf = service.prepare_service([],
+                                       default_config_files=dcf)
 
         CONF = self.conf = conf
         self.tmp_dir = data_tmp_dir
-
-        # Use the indexer set in the conf, unless we have set an
-        # override via the environment.
-        if 'GNOCCHI_TEST_INDEXER_URL' in os.environ:
-            conf.set_override('url',
-                              os.environ.get("GNOCCHI_TEST_INDEXER_URL"),
-                              'indexer')
 
         # TODO(jd) It would be cool if Gabbi was able to use the null://
         # indexer, but this makes the API returns a lot of 501 error, which
@@ -125,16 +123,16 @@ class ConfigFixture(fixture.GabbiFixture):
 
         conf.set_override('pecan_debug', False, 'api')
 
-        # Turn off any middleware.
-        conf.set_override('middlewares', [], 'api')
-
         # Set pagination to a testable value
         conf.set_override('max_limit', 7, 'api')
 
         self.index = index
 
+        s = storage.get_driver(conf)
+        s.upgrade(index)
+
         # start up a thread to async process measures
-        self.metricd_thread = MetricdThread(index, storage.get_driver(conf))
+        self.metricd_thread = MetricdThread(index, s)
         self.metricd_thread.start()
 
     def stop_fixture(self):

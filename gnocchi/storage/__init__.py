@@ -82,11 +82,15 @@ class Metric(object):
     __hash__ = object.__hash__
 
 
-class InvalidQuery(Exception):
+class StorageError(Exception):
     pass
 
 
-class MetricDoesNotExist(Exception):
+class InvalidQuery(StorageError):
+    pass
+
+
+class MetricDoesNotExist(StorageError):
     """Error raised when this metric does not exist."""
 
     def __init__(self, metric):
@@ -95,7 +99,7 @@ class MetricDoesNotExist(Exception):
             "Metric %s does not exist" % metric)
 
 
-class AggregationDoesNotExist(Exception):
+class AggregationDoesNotExist(StorageError):
     """Error raised when the aggregation method doesn't exists for a metric."""
 
     def __init__(self, metric, method):
@@ -106,7 +110,18 @@ class AggregationDoesNotExist(Exception):
             (method, metric))
 
 
-class MetricAlreadyExists(Exception):
+class GranularityDoesNotExist(StorageError):
+    """Error raised when the granularity doesn't exist for a metric."""
+
+    def __init__(self, metric, granularity):
+        self.metric = metric
+        self.granularity = granularity
+        super(GranularityDoesNotExist, self).__init__(
+            "Granularity '%s' for metric %s does not exist" %
+            (granularity, metric))
+
+
+class MetricAlreadyExists(StorageError):
     """Error raised when this metric already exists."""
 
     def __init__(self, metric):
@@ -115,7 +130,7 @@ class MetricAlreadyExists(Exception):
             "Metric %s already exists" % metric)
 
 
-class MetricUnaggregatable(Exception):
+class MetricUnaggregatable(StorageError):
     """Error raised when metrics can't be aggregated."""
 
     def __init__(self, metrics, reason):
@@ -147,6 +162,10 @@ class StorageDriver(object):
 
     @staticmethod
     def stop():
+        pass
+
+    @staticmethod
+    def upgrade(index):
         pass
 
     def process_background_tasks(self, index, sync=False):
@@ -214,7 +233,7 @@ class StorageDriver(object):
     def measures_report():
         """Return a report of pending to process measures.
 
-        Only usefull for drivers that process measurements in background
+        Only useful for drivers that process measurements in background
 
         :return: {metric_id: pending_measures_count}
         """
@@ -241,17 +260,23 @@ class StorageDriver(object):
     @staticmethod
     def get_cross_metric_measures(metrics, from_timestamp=None,
                                   to_timestamp=None, aggregation='mean',
+                                  granularity=None,
                                   needed_overlap=None):
         """Get aggregated measures of multiple entities.
 
         :param entities: The entities measured to aggregate.
         :param from timestamp: The timestamp to get the measure from.
         :param to timestamp: The timestamp to get the measure to.
+        :param granularity: The granularity to retrieve.
         :param aggregation: The type of aggregation to retrieve.
         """
         for metric in metrics:
             if aggregation not in metric.archive_policy.aggregation_methods:
                 raise AggregationDoesNotExist(metric, aggregation)
+            if (granularity is not None and granularity
+               not in set(d.granularity
+                          for d in metric.archive_policy.definition)):
+                raise GranularityDoesNotExist(metric, granularity)
 
     @staticmethod
     def search_value(metrics, query, from_timestamp=None,
