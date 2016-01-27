@@ -24,13 +24,16 @@ override_dh_auto_install:
 #			--root $(CURDIR)/debian/python3-gnocchi; \
 #	done
 	rm -rf $(CURDIR)/debian/python*-gnocchi/usr/lib/python*/dist-packages/*.pth
+	rm -rf $(CURDIR)/debian/python*-gnocchi/usr/etc
 
 	mkdir -p $(CURDIR)/debian/gnocchi-common/usr/share/gnocchi-common
-	oslo-config-generator --output-file $(CURDIR)/debian/gnocchi-common/usr/share/gnocchi-common/gnocchi.conf \
+	PYTHONPATH=$(CURDIR)/debian/python-gnocchi/usr/lib/python2.7/dist-packages oslo-config-generator \
+		--output-file $(CURDIR)/debian/gnocchi-common/usr/share/gnocchi-common/gnocchi.conf \
 		--wrap-width 140 \
 		--namespace gnocchi \
 		--namespace oslo.db \
 		--namespace oslo.log \
+		--namespace oslo.middleware \
 		--namespace oslo.policy \
 		--namespace keystonemiddleware.auth_token
 	sed -i 's|^[ \t#]*url[ \t#]*=.*|url = sqlite:////var/lib/gnocchi/gnocchidb|' $(CURDIR)/debian/gnocchi-common/usr/share/gnocchi-common/gnocchi.conf
