@@ -1,6 +1,7 @@
 gnocchi (1.3.3+2016.01.27.git.e1339d77a9-2) UNRELEASED; urgency=medium
 
   * Removed influxdb and influxdb-dev from build-depends-indep.
+  * Do not build-depends on python-ceilometer.
 
  -- Thomas Goirand <zigo@debian.org>  Wed, 27 Jan 2016 17:16:52 +0000
 
