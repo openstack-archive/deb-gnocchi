@@ -153,11 +153,6 @@ class TimeSerie(SerializableMixin):
             return pandas.tseries.offsets.Nano(value * 10e8)
         return pandas.tseries.frequencies.to_offset(value)
 
-    @staticmethod
-    def _round_timestamp(ts, freq):
-        return pandas.Timestamp(
-            (ts.value // freq.delta.value) * freq.delta.value)
-
 
 class BoundTimeSerie(TimeSerie):
     def __init__(self, ts=None, block_size=None, back_window=0):

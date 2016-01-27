@@ -324,15 +324,6 @@ function preinstall_gnocchi {
     fi
 }
 
-function preinstall_gnocchi {
-    # Needed to build psycopg2
-    if is_ubuntu; then
-        install_package libpq-dev
-    else
-        install_package postgresql-devel
-    fi
-}
-
 # install_gnocchi() - Collect source and prepare
 function install_gnocchi {
     if [ "${GNOCCHI_COORDINATOR_URL%%:*}" == "redis" ]; then
