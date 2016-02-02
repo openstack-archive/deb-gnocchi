@@ -2,6 +2,7 @@ gnocchi (1.3.4-1) experimental; urgency=medium
 
   * New upstream release.
   * Clean /var/{lib,log}/gnocchi on purge (Closes: #810700).
+  * Added nl.po debconf translation (Closes: #812356).
 
  -- Thomas Goirand <zigo@debian.org>  Tue, 02 Feb 2016 09:15:03 +0000
 
