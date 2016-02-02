@@ -22,8 +22,10 @@ import hashlib
 import json
 import uuid
 
-from keystonemiddleware import fixture as ksm_fixture
+import keystonemiddleware.auth_token
+from keystonemiddleware import opts as ks_opts
 import mock
+import oslo_config
 from oslo_utils import timeutils
 import six
 from stevedore import extension
@@ -112,6 +114,28 @@ class RestTest(tests_base.TestCase, testscenarios.TestWithScenarios):
         pecan_config['indexer'] = self.index
         pecan_config['storage'] = self.storage
         pecan_config['not_implemented_middleware'] = False
+
+        # NOTE(sileht): We register keystonemiddleware options
+        for group, options in ks_opts.list_auth_token_opts():
+            self.conf.register_opts(list(options), group=group)
+
+        self.conf.set_override("cache", TestingApp.CACHE_NAME,
+                               group='keystone_authtoken')
+        # TODO(jd) Override these options with values. They are not used, but
+        # if they are None (their defaults), the keystone authtoken middleware
+        # prints a warning… :( When the bug is fixed we can remove that!
+        # See https://bugs.launchpad.net/keystonemiddleware/+bug/1429179
+        try:
+            self.conf.set_override("identity_uri", "foobar",
+                                   group="keystone_authtoken")
+        except oslo_config.cfg.NoSuchOptError:
+            # This option does not exist in keystonemiddleware>=4
+            pass
+        self.conf.set_override("auth_uri", "foobar",
+                               group="keystone_authtoken")
+        self.conf.set_override("delay_auth_decision",
+                               not self.auth,
+                               group="keystone_authtoken")
 
         RestTest.pecan_config = pecan_config
         RestTest.conf = self.conf
@@ -271,8 +295,8 @@ class MetricTest(RestTest):
             params={
                 "id": str(uuid.uuid4()),
                 "started_at": "2014-01-01 02:02:02",
-                "user_id": TestingApp.USER_ID_2,
-                "project_id": TestingApp.PROJECT_ID_2,
+                "user_id": FakeMemcache.USER_ID_2,
+                "project_id": FakeMemcache.PROJECT_ID_2,
                 "metrics": {"foobar": {"archive_policy_name": "low"}},
             })
         resource = json.loads(result.text)
@@ -1480,7 +1504,7 @@ class ResourceTest(RestTest):
                 "id": str(uuid.uuid4()),
                 "started_at": "2014-01-01 02:02:02",
                 "user_id": u1,
-                "project_id": TestingApp.PROJECT_ID_2,
+                "project_id": FakeMemcache.PROJECT_ID_2,
             })
         g = json.loads(result.text)
 
@@ -1645,8 +1669,8 @@ class ResourceTest(RestTest):
             params={
                 "id": str(uuid.uuid4()),
                 "started_at": "2014-01-01 02:02:02",
-                "user_id": TestingApp.USER_ID_2,
-                "project_id": TestingApp.PROJECT_ID_2,
+                "user_id": FakeMemcache.USER_ID_2,
+                "project_id": FakeMemcache.PROJECT_ID_2,
             })
         g = json.loads(result.text)
 

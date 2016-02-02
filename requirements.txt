@@ -17,5 +17,9 @@ werkzeug
 trollius
 retrying
 WebOb>=1.4.1
+alembic>=0.7.6,!=0.8.1
+psycopg2
+pymysql
+keystonemiddleware>=2.3.0
 PasteDeploy
 prettytable

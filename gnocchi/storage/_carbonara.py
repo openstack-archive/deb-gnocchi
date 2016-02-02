@@ -63,7 +63,7 @@ class CarbonaraBasedStorage(storage.StorageDriver):
     def stop(self):
         self.coord.stop()
 
-    def _lock(self, metric_id):
+    def __call__(self, metric_id):
         lock_name = b"gnocchi-" + str(metric_id).encode('ascii')
         return self.coord.get_lock(lock_name)
 
@@ -212,9 +212,6 @@ class CarbonaraBasedStorage(storage.StorageDriver):
 
     def delete_metric(self, metric):
         with self._lock(metric.id):
-            # If the metric has never been upgraded, we need to delete this
-            # here too
-            self._delete_metric_archives(metric)
             self._delete_metric(metric)
 
     @staticmethod
@@ -274,8 +271,12 @@ class CarbonaraBasedStorage(storage.StorageDriver):
             # NOTE(jd): We need to lock the metric otherwise we might delete
             # measures that another worker might be processing. Deleting
             # measurement files under its feet is not nice!
-            with self._lock(metric_id)(blocking=sync):
+            lock = self._lock(metric_id)
+            lock.acquire(blocking=sync)
+            try:
                 self._delete_unprocessed_measures_for_metric_id(metric_id)
+            finally:
+                lock.release()
         for metric in metrics:
             lock = self._lock(metric.id)
             agg_methods = list(metric.archive_policy.aggregation_methods)
