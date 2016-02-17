@@ -20,10 +20,7 @@ import uuid
 from oslo_config import cfg
 import retrying
 import six
-try:
-    from swiftclient import client as swclient
-except ImportError:
-    swclient = None
+from swiftclient import client as swclient
 
 from gnocchi import storage
 from gnocchi.storage import _carbonara
@@ -34,12 +31,14 @@ OPTS = [
                default='1',
                help='Swift authentication version to user.'),
     cfg.StrOpt('swift_preauthurl',
+               default=None,
                help='Swift pre-auth URL.'),
     cfg.StrOpt('swift_authurl',
                default="http://localhost:8080/auth/v1.0",
                help='Swift auth URL.'),
     cfg.StrOpt('swift_preauthtoken',
                secret=True,
+               default=None,
                help='Swift token to user to authenticate.'),
     cfg.StrOpt('swift_user',
                default="admin:admin",
@@ -67,8 +66,6 @@ def retry_if_result_empty(result):
 class SwiftStorage(_carbonara.CarbonaraBasedStorage):
     def __init__(self, conf):
         super(SwiftStorage, self).__init__(conf)
-        if swclient is None:
-            raise RuntimeError("python-swiftclient unavailable")
         self.swift = swclient.Connection(
             auth_version=conf.swift_auth_version,
             authurl=conf.swift_authurl,
@@ -77,15 +74,15 @@ class SwiftStorage(_carbonara.CarbonaraBasedStorage):
             key=conf.swift_key,
             tenant_name=conf.swift_tenant_name,
             timeout=conf.swift_timeout)
+        self._lock = _carbonara.CarbonaraBasedStorageToozLock(conf)
         self._container_prefix = conf.swift_container_prefix
         self.swift.put_container(self.MEASURE_PREFIX)
 
+    def stop(self):
+        self._lock.stop()
+
     def _container_name(self, metric):
         return '%s.%s' % (self._container_prefix, str(metric.id))
-
-    @staticmethod
-    def _object_name(split_key, aggregation, granularity):
-        return '%s_%s_%s' % (split_key, aggregation, granularity)
 
     def _create_metric(self, metric):
         # TODO(jd) A container per user in their account?
@@ -146,41 +143,32 @@ class SwiftStorage(_carbonara.CarbonaraBasedStorage):
         for f in files:
             self.swift.delete_object(self.MEASURE_PREFIX, f['name'])
 
-    def _store_metric_measures(self, metric, timestamp_key,
-                               aggregation, granularity, data):
-        self.swift.put_object(
-            self._container_name(metric),
-            self._object_name(timestamp_key, aggregation, granularity),
-            data)
+    def _store_metric_measures(self, metric, aggregation, data):
+        self.swift.put_object(self._container_name(metric), aggregation, data)
 
     def _delete_metric(self, metric):
         self._delete_unaggregated_timeserie(metric)
-        container = self._container_name(metric)
+        for aggregation in metric.archive_policy.aggregation_methods:
+            try:
+                self.swift.delete_object(self._container_name(metric),
+                                         aggregation)
+            except swclient.ClientException as e:
+                if e.http_status != 404:
+                    raise
         try:
-            headers, files = self.swift.get_container(
-                container, full_listing=True)
+            self.swift.delete_container(self._container_name(metric))
         except swclient.ClientException as e:
             if e.http_status != 404:
                 # Maybe it never has been created (no measure)
                 raise
-        else:
-            for obj in files:
-                self.swift.delete_object(container, obj['name'])
-            try:
-                self.swift.delete_container(container)
-            except swclient.ClientException as e:
-                if e.http_status != 404:
-                    # Deleted in the meantime? Whatever.
-                    raise
 
     @retrying.retry(stop_max_attempt_number=4,
                     wait_fixed=500,
                     retry_on_result=retry_if_result_empty)
-    def _get_measures(self, metric, timestamp_key, aggregation, granularity):
+    def _get_measures(self, metric, aggregation):
         try:
             headers, contents = self.swift.get_object(
-                self._container_name(metric), self._object_name(
-                    timestamp_key, aggregation, granularity))
+                self._container_name(metric), aggregation)
         except swclient.ClientException as e:
             if e.http_status == 404:
                 try:
@@ -193,70 +181,9 @@ class SwiftStorage(_carbonara.CarbonaraBasedStorage):
             raise
         return contents
 
-    def _list_split_keys_for_metric(self, metric, aggregation, granularity):
-        container = self._container_name(metric)
-        try:
-            headers, files = self.swift.get_container(
-                container, full_listing=True)
-        except swclient.ClientException as e:
-            if e.http_status == 404:
-                raise storage.MetricDoesNotExist(metric)
-            raise
-        keys = []
-        for f in files:
-            try:
-                key, agg, g = f['name'].split('_', 2)
-            except ValueError:
-                # Might be "none", or any other file. Be resilient.
-                continue
-            if aggregation == agg and granularity == float(g):
-                keys.append(key)
-        return keys
-
-    @retrying.retry(stop_max_attempt_number=4,
-                    wait_fixed=500,
-                    retry_on_result=retry_if_result_empty)
-    def _get_unaggregated_timeserie(self, metric):
-        try:
-            headers, contents = self.swift.get_object(
-                self._container_name(metric), "none")
-        except swclient.ClientException as e:
-            if e.http_status == 404:
-                raise storage.MetricDoesNotExist(metric)
-            raise
-        return contents
-
-    def _store_unaggregated_timeserie(self, metric, data):
-        self.swift.put_object(self._container_name(metric), "none", data)
-
     def _delete_unaggregated_timeserie(self, metric):
         try:
             self.swift.delete_object(self._container_name(metric), "none")
         except swclient.ClientException as e:
             if e.http_status != 404:
                 raise
-
-    # The following methods deal with Gnocchi <= 1.3 archives
-    def _get_metric_archive(self, metric, aggregation):
-        """Retrieve data in the place we used to store TimeSerieArchive."""
-        try:
-            headers, contents = self.swift.get_object(
-                self._container_name(metric), aggregation)
-        except swclient.ClientException as e:
-            if e.http_status == 404:
-                raise storage.AggregationDoesNotExist(metric, aggregation)
-            raise
-        return contents
-
-    def _store_metric_archive(self, metric, aggregation, data):
-        """Stores data in the place we used to store TimeSerieArchive."""
-        self.swift.put_object(self._container_name(metric), aggregation, data)
-
-    def _delete_metric_archives(self, metric):
-        for aggregation in metric.archive_policy.aggregation_methods:
-            try:
-                self.swift.delete_object(self._container_name(metric),
-                                         aggregation)
-            except swclient.ClientException as e:
-                if e.http_status != 404:
-                    raise

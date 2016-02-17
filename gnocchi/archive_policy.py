@@ -137,12 +137,13 @@ class ArchivePolicy(object):
 
 
 OPTS = [
-    cfg.ListOpt(
+    cfg.Opt(
         'default_aggregation_methods',
-        item_type=types.String(
-            choices=ArchivePolicy.VALID_AGGREGATION_METHODS),
         default=['mean', 'min', 'max', 'sum',
                  'std', 'median', 'count', '95pct'],
+        type=types.List(
+            item_type=types.String(
+                choices=ArchivePolicy.VALID_AGGREGATION_METHODS)),
         help='Default aggregation methods to use in created archive policies'),
 ]
 
@@ -168,8 +169,6 @@ class ArchivePolicyItem(dict):
                     "At least two of granularity/points/timespan "
                     "must be provided")
             granularity = round(timespan / float(points))
-        else:
-            granularity = float(granularity)
 
         if points is None:
             if timespan is None:
@@ -178,7 +177,6 @@ class ArchivePolicyItem(dict):
                 points = int(timespan / granularity)
                 self['timespan'] = granularity * points
         else:
-            points = int(points)
             self['timespan'] = granularity * points
 
         self['points'] = points

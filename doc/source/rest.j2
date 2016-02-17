@@ -5,19 +5,10 @@
 Authentication
 ==============
 
-By default, no authentication is configured in Gnocchi. You need to provides
-these headers in your HTTP requests:
-
-* X-User-Id
-* X-Project-Id
-
-The `X-Roles` header can also be provided in order to match role based ACL
-specified in `policy.json`.
-
-If you enable the OpenStack Keystone middleware, you only need to authenticate
-against Keystone and provide `X-Auth-Token` header with a valid token for each
-request sent to Gnocchi. The headers mentionned above will be filled
-automatically based on your Keystone authorizations.
+By default, the `api.middleware` configuration option is set to use the
+Keystone middleware. Therefore you must authenticate using Keystone to use the
+API and provide an `X-Auth-Token` header with a valid token for each request
+sent to Gnocchi.
 
 Metrics
 =======
@@ -79,20 +70,6 @@ method. It is possible to request for any other method by specifying the
 
 The list of aggregation method available is: *mean*, *sum*, *last*, *max*,
 *min*, *std*, *median*, *first*, *count* and *Npct* (with 0 < N < 100).
-
-It's possible to provide the `granularity` argument to specify the granularity
-to retrieve, rather than all the granularities available:
-
-{{ scenarios['get-measures-granularity']['doc'] }}
-
-
-Measures batching
-=================
-It is also possible to batch measures sending, i.e. send several measures for
-different metrics in a simple call:
-
-{{ scenarios['post-measures-batch']['doc'] }}
-
 
 Archive Policy
 ==============
@@ -372,7 +349,7 @@ It can also be done by providing the list of metrics to aggregate:
 .. Note::
 
    This aggregation is done against the aggregates built and updated for
-   a metric when new measurements are posted in Gnocchi. Therefore, the aggregate
+   a metric when new measurements are posted in Gnocchi. Therefore the aggregate
    of this already aggregated data may not have sense for certain kind of
    aggregation method (e.g. stdev).
 
@@ -383,22 +360,12 @@ the one described in `Searching for resources`_.
 
 {{ scenarios['get-across-metrics-measures-by-attributes-lookup']['doc'] }}
 
-Also aggregation across metrics have different behavior depending
-on if boundary are set ('start' and 'stop') and if 'needed_overlap' is set.
-
-If boundaries are not set, Gnocchi makes the aggregation only with points
-at timestamp present in all timeseries.
-
-But when boundaries are set, Gnocchi expects that we have certain
-percent of timestamps common between timeseries, this percent is controlled
-by needed_overlap (defaulted with 100%). If this percent is not reached an
-error is returned.
 
 Capabilities
 ============
 
-The list aggregation methods that can be used in Gnocchi are extendable and
-can differ between deployments. It is possible to get the supported list of
+The list aggregation methods that can be used in Gnocchi is extendable and
+can differ between deployement. It is possible to get the supported list of
 aggregation methods from the API server:
 
 {{ scenarios['get-capabilities']['doc'] }}

@@ -28,8 +28,7 @@ class TestArchivePolicy(base.BaseTestCase):
                           ["*"])
 
     def test_aggregation_methods(self):
-        conf = service.prepare_service([],
-                                       default_config_files=[])
+        conf = service.prepare_service([])
 
         ap = archive_policy.ArchivePolicy("foobar",
                                           0,

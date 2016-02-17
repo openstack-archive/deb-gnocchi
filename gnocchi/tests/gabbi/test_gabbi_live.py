@@ -44,5 +44,5 @@ def load_tests(loader, tests, pattern):
                                   host=parsed_url.hostname,
                                   port=port,
                                   prefix=prefix)
-    elif os.getenv("GABBI_LIVE"):
+    elif os.getenv("GABBI_LIVE_FAIL_IF_NO_TEST"):
         raise RuntimeError('"GNOCCHI_SERVICE_URL" is not set')
