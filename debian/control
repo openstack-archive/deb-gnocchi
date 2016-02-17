@@ -67,8 +67,8 @@ Build-Depends-Indep: alembic (>= 0.7.6),
                      subunit (>= 0.0.18),
                      testrepository,
 Standards-Version: 3.9.6
-Vcs-Browser: http://anonscm.debian.org/gitweb/?p=openstack/python-gnocchi.git
-Vcs-Git: git://anonscm.debian.org/openstack/python-gnocchi.git
+Vcs-Browser: https://anonscm.debian.org/gitweb/?p=openstack/python-gnocchi.git
+Vcs-Git: https://anonscm.debian.org/git/openstack/python-gnocchi.git
 Homepage: https://github.com/openstack/gnocchi
 
 Package: python-gnocchi
