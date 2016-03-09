@@ -142,6 +142,11 @@ class FakeRadosModule(object):
             del self.kvs[key]
             del self.kvs_xattrs[key]
 
+        def aio_remove(self, key):
+            self._validate_key(key)
+            self.kvs.pop(key, None)
+            self.kvs_xattrs.pop(key, None)
+
     class FakeRados(object):
         def __init__(self, kvs, kvs_xattrs):
             self.kvs = kvs
@@ -187,7 +192,7 @@ class FakeSwiftClient(object):
         self.kvs[container] = {}
 
     def get_container(self, container, delimiter=None,
-                      path=None, full_listing=False):
+                      path=None, full_listing=False, limit=None):
         try:
             container = self.kvs[container]
         except KeyError:
@@ -214,12 +219,15 @@ class FakeSwiftClient(object):
 
         if full_listing:
             end = None
+        elif limit:
+            end = limit
         else:
             # In truth, it's 10000, but 1 is enough to make sure our test fails
             # otherwise.
             end = 1
 
-        return {}, (files + list(directories))[:end]
+        return ({'x-container-object-count': len(container.keys())},
+                (files + list(directories))[:end])
 
     def put_object(self, container, key, obj):
         if hasattr(obj, "seek"):
@@ -347,17 +355,13 @@ class TestCase(base.BaseTestCase):
         self.index = indexer.get_driver(self.conf)
         self.index.connect()
 
-        self.conf.set_override('coordination_url',
-                               os.getenv("GNOCCHI_COORDINATION_URL", "ipc://"),
-                               'storage')
-
         # NOTE(jd) So, some driver, at least SQLAlchemy, can't create all
         # their tables in a single transaction even with the
         # checkfirst=True, so what we do here is we force the upgrade code
         # path to be sequential to avoid race conditions as the tests run
         # in parallel.
         self.coord = coordination.get_coordinator(
-            os.getenv("GNOCCHI_COORDINATION_URL", "ipc://"),
+            self.conf.storage.coordination_url,
             str(uuid.uuid4()).encode('ascii'))
 
         self.coord.start()

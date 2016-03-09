@@ -71,6 +71,24 @@ method. It is possible to request for any other method by specifying the
 The list of aggregation method available is: *mean*, *sum*, *last*, *max*,
 *min*, *std*, *median*, *first*, *count* and *Npct* (with 0 < N < 100).
 
+It's possible to provide the `granularity` argument to specify the granularity
+to retrieve, rather than all the granularities available:
+
+{{ scenarios['get-measures-granularity']['doc'] }}
+
+
+Measures batching
+=================
+It is also possible to batch measures sending, i.e. send several measures for
+different metrics in a simple call:
+
+{{ scenarios['post-measures-batch']['doc'] }}
+
+Or using named metrics of resources:
+
+{{ scenarios['post-measures-batch-named']['doc'] }}
+
+
 Archive Policy
 ==============
 
@@ -357,9 +375,23 @@ It's also possible to do that aggregation on metrics linked to resources. In
 order to select these resources, the following endpoint accepts a query such as
 the one described in `Searching for resources`_.
 
-
 {{ scenarios['get-across-metrics-measures-by-attributes-lookup']['doc'] }}
 
+It is possible to group the resource search results by any attribute of the
+requested resource type, and the compute the aggregation:
+
+{{ scenarios['get-across-metrics-measures-by-attributes-lookup-groupby']['doc'] }}
+
+Also aggregation across metrics have different behavior depending
+on if boundary are set ('start' and 'stop') and if 'needed_overlap' is set.
+
+If boundaries are not set, Gnocchi makes the aggregation only with points
+at timestamp present in all timeseries.
+
+But when boundaries are set, Gnocchi expects that we have certain
+percent of timestamps common between timeseries, this percent is controlled
+by needed_overlap (defaulted with 100%). If this percent is not reached an
+error is returned.
 
 Capabilities
 ============

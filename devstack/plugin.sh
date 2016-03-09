@@ -61,15 +61,14 @@ function create_gnocchi_accounts {
     then
         create_service_user "gnocchi"
 
-        if [[ "$KEYSTONE_CATALOG_BACKEND" = 'sql' ]]; then
-            local gnocchi_service=$(get_or_create_service "gnocchi" \
-                "metric" "OpenStack Metric Service")
-            get_or_create_endpoint $gnocchi_service \
-                "$REGION_NAME" \
-                "$(gnocchi_service_url)/" \
-                "$(gnocchi_service_url)/" \
-                "$(gnocchi_service_url)/"
-        fi
+        local gnocchi_service=$(get_or_create_service "gnocchi" \
+            "metric" "OpenStack Metric Service")
+        get_or_create_endpoint $gnocchi_service \
+            "$REGION_NAME" \
+            "$(gnocchi_service_url)" \
+            "$(gnocchi_service_url)" \
+            "$(gnocchi_service_url)"
+
         if is_service_enabled swift && [[ "$GNOCCHI_STORAGE_BACKEND" = 'swift' ]] ; then
             get_or_create_project "gnocchi_swift" default
             local gnocchi_swift_user=$(get_or_create_user "gnocchi_swift" \
@@ -228,11 +227,9 @@ function configure_gnocchi {
     # Install the configuration files
     cp $GNOCCHI_DIR/etc/gnocchi/* $GNOCCHI_CONF_DIR
 
-    iniset $GNOCCHI_CONF storage coordination_url "$GNOCCHI_COORDINATOR_URL"
-    if [ "${GNOCCHI_COORDINATOR_URL:0:7}" == "file://" ]; then
-        gnocchi_locks_dir=${GNOCCHI_COORDINATOR_URL:7}
-        [ ! -d $gnocchi_locks_dir ] && sudo mkdir -m 755 -p ${gnocchi_locks_dir}
-        sudo chown $STACK_USER $gnocchi_locks_dir
+
+    if [ -n "$GNOCCHI_COORDINATOR_URL" ]; then
+        iniset $GNOCCHI_CONF storage coordination_url "$GNOCCHI_COORDINATOR_URL"
     fi
 
     # Configure auth token middleware
@@ -263,14 +260,16 @@ function configure_gnocchi {
 
     if is_service_enabled key; then
         if is_service_enabled gnocchi-grafana; then
-            iniset $GNOCCHI_PASTE_CONF pipeline:main pipeline "cors keystone_authtoken gnocchi"
+            iniset $GNOCCHI_PASTE_CONF pipeline:main pipeline "cors gnocchi+auth"
             iniset $KEYSTONE_CONF cors allowed_origin ${GRAFANA_URL}
             iniset $GNOCCHI_CONF cors allowed_origin ${GRAFANA_URL}
             iniset $GNOCCHI_CONF cors allow_methods GET,POST,PUT,DELETE,OPTIONS,HEAD,PATCH
             iniset $GNOCCHI_CONF cors allow_headers Content-Type,Cache-Control,Content-Language,Expires,Last-Modified,Pragma,X-Auth-Token,X-Subject-Token
+        else
+            iniset $GNOCCHI_PASTE_CONF pipeline:main pipeline gnocchi+auth
         fi
     else
-        iniset $GNOCCHI_PASTE_CONF pipeline:main pipeline gnocchi
+        iniset $GNOCCHI_PASTE_CONF pipeline:main pipeline gnocchi+noauth
     fi
 
     # Configure the indexer database
@@ -334,6 +333,10 @@ function preinstall_gnocchi {
     else
         install_package postgresql-devel
     fi
+    if [[ "$GNOCCHI_STORAGE_BACKEND" = 'ceph' ]] ; then
+            install_package cython
+            install_package librados-dev
+    fi
 }
 
 # install_gnocchi() - Collect source and prepare
@@ -345,6 +348,10 @@ function install_gnocchi {
     if [[ "${GNOCCHI_STORAGE_BACKEND}" == 'influxdb' ]] ; then
         _gnocchi_install_influxdb
         pip_install influxdb
+    fi
+
+    if [[ "$GNOCCHI_STORAGE_BACKEND" = 'ceph' ]] ; then
+        pip_install cradox
     fi
 
     if is_service_enabled gnocchi-grafana
@@ -401,7 +408,7 @@ function start_gnocchi {
         export OS_AUTH_TYPE=gnocchi-noauth
         export GNOCCHI_USER_ID=`uuidgen`
         export GNOCCHI_PROJECT_ID=`uuidgen`
-        export GNOCCHI_ENDPOINT="${gnocchi_service_url}"
+        export GNOCCHI_ENDPOINT="$(gnocchi_service_url)"
     fi
 
     gnocchi archive-policy create -d granularity:5m,points:12 -d granularity:1h,points:24 -d granularity:1d,points:30 low

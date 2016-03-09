@@ -101,7 +101,9 @@ class PreciseTimestamp(types.TypeDecorator):
 
 
 class GnocchiBase(models.ModelBase):
-    pass
+    __table_args__ = (
+        COMMON_TABLES_ARGS,
+    )
 
 
 class ArchivePolicyDefinitionType(sqlalchemy_utils.JSONType):
@@ -119,10 +121,6 @@ class SetType(sqlalchemy_utils.JSONType):
 
 class ArchivePolicy(Base, GnocchiBase, archive_policy.ArchivePolicy):
     __tablename__ = 'archive_policy'
-    __table_args__ = (
-        sqlalchemy.Index('ix_archive_policy_name', 'name'),
-        COMMON_TABLES_ARGS,
-    )
 
     name = sqlalchemy.Column(sqlalchemy.String(255), primary_key=True)
     back_window = sqlalchemy.Column(sqlalchemy.Integer, nullable=False)
@@ -135,7 +133,6 @@ class ArchivePolicy(Base, GnocchiBase, archive_policy.ArchivePolicy):
 class Metric(Base, GnocchiBase, storage.Metric):
     __tablename__ = 'metric'
     __table_args__ = (
-        sqlalchemy.Index('ix_metric_id', 'id'),
         sqlalchemy.Index('ix_metric_status', 'status'),
         sqlalchemy.UniqueConstraint("resource_id", "name",
                                     name="uniq_metric0resource_id0name"),
@@ -153,9 +150,9 @@ class Metric(Base, GnocchiBase, storage.Metric):
         nullable=False)
     archive_policy = sqlalchemy.orm.relationship(ArchivePolicy, lazy="joined")
     created_by_user_id = sqlalchemy.Column(
-        sqlalchemy_utils.UUIDType())
+        sqlalchemy.String(255))
     created_by_project_id = sqlalchemy.Column(
-        sqlalchemy_utils.UUIDType())
+        sqlalchemy.String(255))
     resource_id = sqlalchemy.Column(
         sqlalchemy_utils.UUIDType(),
         sqlalchemy.ForeignKey('resource.id',
@@ -215,8 +212,7 @@ class ResourceJsonifier(indexer.Resource):
 class ResourceMixin(ResourceJsonifier):
     @declarative.declared_attr
     def __table_args__(cls):
-        return (sqlalchemy.Index('ix_%s_id' % cls.__tablename__, 'id'),
-                sqlalchemy.CheckConstraint('started_at <= ended_at',
+        return (sqlalchemy.CheckConstraint('started_at <= ended_at',
                                            name="ck_started_before_ended"),
                 COMMON_TABLES_ARGS)
 
@@ -229,9 +225,9 @@ class ResourceMixin(ResourceJsonifier):
                                              name="resource_type_enum"),
                              nullable=False, default='generic')
     created_by_user_id = sqlalchemy.Column(
-        sqlalchemy_utils.UUIDType())
+        sqlalchemy.String(255))
     created_by_project_id = sqlalchemy.Column(
-        sqlalchemy_utils.UUIDType())
+        sqlalchemy.String(255))
     started_at = sqlalchemy.Column(PreciseTimestamp, nullable=False,
                                    # NOTE(jd): We would like to use
                                    # sqlalchemy.func.now, but we can't
@@ -243,8 +239,9 @@ class ResourceMixin(ResourceJsonifier):
     revision_start = sqlalchemy.Column(PreciseTimestamp, nullable=False,
                                        default=lambda: utils.utcnow())
     ended_at = sqlalchemy.Column(PreciseTimestamp)
-    user_id = sqlalchemy.Column(sqlalchemy_utils.UUIDType())
-    project_id = sqlalchemy.Column(sqlalchemy_utils.UUIDType())
+    user_id = sqlalchemy.Column(sqlalchemy.String(255))
+    project_id = sqlalchemy.Column(sqlalchemy.String(255))
+    original_resource_id = sqlalchemy.Column(sqlalchemy.String(255))
 
 
 class Resource(ResourceMixin, Base, GnocchiBase):
@@ -271,6 +268,7 @@ class Resource(ResourceMixin, Base, GnocchiBase):
 
 class ResourceHistory(ResourceMixin, Base, GnocchiBase):
     __tablename__ = 'resource_history'
+
     revision = sqlalchemy.Column(sqlalchemy.Integer, autoincrement=True,
                                  primary_key=True)
     id = sqlalchemy.Column(sqlalchemy_utils.UUIDType(),
@@ -296,8 +294,7 @@ class ResourceExt(object):
 class ResourceExtMixin(object):
     @declarative.declared_attr
     def __table_args__(cls):
-        return (sqlalchemy.Index('ix_%s_id' % cls.__tablename__, 'id'),
-                COMMON_TABLES_ARGS)
+        return (COMMON_TABLES_ARGS, )
 
     @declarative.declared_attr
     def id(cls):
@@ -313,9 +310,7 @@ class ResourceExtMixin(object):
 class ResourceHistoryExtMixin(object):
     @declarative.declared_attr
     def __table_args__(cls):
-        return (sqlalchemy.Index('ix_%s_revision' % cls.__tablename__,
-                                 'revision'),
-                COMMON_TABLES_ARGS)
+        return (COMMON_TABLES_ARGS, )
 
     @declarative.declared_attr
     def revision(cls):
@@ -331,10 +326,6 @@ class ResourceHistoryExtMixin(object):
 
 class ArchivePolicyRule(Base, GnocchiBase):
     __tablename__ = 'archive_policy_rule'
-    __table_args__ = (
-        sqlalchemy.Index('ix_archive_policy_rule_name', 'name'),
-        COMMON_TABLES_ARGS,
-    )
 
     name = sqlalchemy.Column(sqlalchemy.String(255), primary_key=True)
     archive_policy_name = sqlalchemy.Column(

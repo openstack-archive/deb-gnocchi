@@ -13,6 +13,7 @@
 # WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 # License for the specific language governing permissions and limitations
 # under the License.
+from collections import defaultdict
 import contextlib
 import datetime
 import uuid
@@ -101,10 +102,31 @@ class SwiftStorage(_carbonara.CarbonaraBasedStorage):
             six.text_type(metric.id) + "/" + six.text_type(uuid.uuid4()) + now,
             data)
 
-    def _list_metric_with_measures_to_process(self):
+    def _build_report(self, details):
         headers, files = self.swift.get_container(self.MEASURE_PREFIX,
                                                   delimiter='/',
                                                   full_listing=True)
+        metrics = len(files)
+        measures = headers.get('x-container-object-count')
+        metric_details = defaultdict(int)
+        if details:
+            headers, files = self.swift.get_container(self.MEASURE_PREFIX,
+                                                      full_listing=True)
+            for f in files:
+                metric = f['name'].split('/', 1)[0]
+                metric_details[metric] += 1
+        return metrics, measures, metric_details if details else None
+
+    def _list_metric_with_measures_to_process(self, block_size, full=False):
+        limit = None
+        if not full:
+            limit = block_size * (self.partition + 1)
+        headers, files = self.swift.get_container(self.MEASURE_PREFIX,
+                                                  delimiter='/',
+                                                  full_listing=full,
+                                                  limit=limit)
+        if not full:
+            files = files[block_size * self.partition:]
         return set(f['subdir'][:-1] for f in files if 'subdir' in f)
 
     def _list_measure_files_for_metric_id(self, metric_id):
@@ -145,6 +167,12 @@ class SwiftStorage(_carbonara.CarbonaraBasedStorage):
 
     def _store_metric_measures(self, metric, aggregation, data):
         self.swift.put_object(self._container_name(metric), aggregation, data)
+
+    def _delete_metric_measures(self, metric, timestamp_key, aggregation,
+                                granularity):
+        self.swift.delete_object(
+            self._container_name(metric),
+            self._object_name(timestamp_key, aggregation, granularity))
 
     def _delete_metric(self, metric):
         self._delete_unaggregated_timeserie(metric)

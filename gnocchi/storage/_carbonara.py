@@ -1,5 +1,6 @@
 # -*- encoding: utf-8 -*-
 #
+# Copyright © 2016 Red Hat, Inc.
 # Copyright © 2014-2015 eNovance
 #
 # Authors: Julien Danjou <julien@danjou.info>
@@ -15,8 +16,12 @@
 # WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 # License for the specific language governing permissions and limitations
 # under the License.
+import collections
+import datetime
 import logging
 import multiprocessing
+import threading
+import time
 import uuid
 
 from concurrent import futures
@@ -36,8 +41,7 @@ OPTS = [
                     'pre-aggregation needs.'),
     cfg.StrOpt('coordination_url',
                secret=True,
-               help='Coordination driver URL',
-               default="file:///var/lib/gnocchi/locks"),
+               help='Coordination driver URL'),
 
 ]
 
@@ -50,6 +54,26 @@ class CarbonaraBasedStorageToozLock(object):
             conf.coordination_url,
             str(uuid.uuid4()).encode('ascii'))
         self.coord.start()
+        if conf.aggregation_workers_number is None:
+            try:
+                self.aggregation_workers_number = multiprocessing.cpu_count()
+            except NotImplementedError:
+                self.aggregation_workers_number = 2
+        else:
+            self.aggregation_workers_number = conf.aggregation_workers_number
+        self.partition = 0
+        self.heartbeater = threading.Thread(target=self._heartbeat,
+                                            name='heartbeat')
+        self.heartbeater.setDaemon(True)
+        self.heartbeater.start()
+
+    def _heartbeat(self):
+        while True:
+            # FIXME(jd) Why 10? Why not. We should have a way to find out
+            # what's the best value here, but it depends on the timeout used by
+            # the driver; tooz should help us here!
+            time.sleep(10)
+            self.coord.heartbeat()
 
     def stop(self):
         self.coord.stop()
@@ -107,23 +131,79 @@ class CarbonaraBasedStorage(storage.StorageDriver):
             ts = None
         else:
             try:
-                ts = carbonara.TimeSerieArchive.unserialize(contents)
-            except ValueError:
-                self._log_data_corruption(metric, aggregation)
-                ts = None
+                data = self._get_metric_archive(metric, aggregation)
+            except (storage.MetricDoesNotExist,
+                    storage.AggregationDoesNotExist):
+                # It really does not exist
+                for d in metric.archive_policy.definition:
+                    if d.granularity == granularity:
+                        return carbonara.AggregatedTimeSerie(
+                            aggregation_method=aggregation,
+                            sampling=granularity,
+                            max_size=d.points)
+                raise storage.GranularityDoesNotExist(metric, granularity)
+            else:
+                archive = carbonara.TimeSerieArchive.unserialize(data)
+                # It's an old metric with an TimeSerieArchive!
+                for ts in archive.agg_timeseries:
+                    if ts.sampling == granularity:
+                        return ts
+                raise storage.GranularityDoesNotExist(metric, granularity)
 
-        if ts is None:
-            ts = carbonara.TimeSerieArchive.from_definitions(
-                [(v.granularity, v.points)
-                 for v in metric.archive_policy.definition],
-                aggregation_method=aggregation)
-        return ts
+        if from_timestamp:
+            from_timestamp = carbonara.AggregatedTimeSerie.get_split_key(
+                from_timestamp, granularity)
 
-    def _add_measures(self, aggregation, metric, timeserie):
-        archive = self._get_measures_archive(metric, aggregation)
-        archive.update(timeserie)
-        self._store_metric_measures(metric, aggregation,
-                                    archive.serialize())
+        if to_timestamp:
+            to_timestamp = carbonara.AggregatedTimeSerie.get_split_key(
+                to_timestamp, granularity)
+
+        timeseries = filter(
+            lambda x: x is not None,
+            self._map_in_thread(
+                self._get_measures_and_unserialize,
+                ((metric, key, aggregation, granularity)
+                 for key in all_keys
+                 if ((not from_timestamp or key >= from_timestamp)
+                     and (not to_timestamp or key <= to_timestamp))))
+        )
+
+        return carbonara.AggregatedTimeSerie.from_timeseries(
+            timeseries,
+            aggregation_method=aggregation,
+            sampling=granularity,
+            max_size=points)
+
+    def _add_measures(self, aggregation, archive_policy_def,
+                      metric, timeserie):
+        with timeutils.StopWatch() as sw:
+            ts = self._get_measures_timeserie(metric, aggregation,
+                                              archive_policy_def.granularity,
+                                              timeserie.first, timeserie.last)
+            LOG.debug("Retrieve measures"
+                      "for %s/%s/%s in %.2fs"
+                      % (metric.id, aggregation, archive_policy_def.
+                         granularity, sw.elapsed()))
+        ts.update(timeserie)
+        with timeutils.StopWatch() as sw:
+            for key, split in ts.split():
+                self._store_metric_measures(metric, key, aggregation,
+                                            archive_policy_def.granularity,
+                                            split.serialize())
+            LOG.debug("Store measures for %s/%s/%s in %.2fs"
+                      % (metric.id, aggregation,
+                         archive_policy_def.granularity, sw.elapsed()))
+
+        if ts.last and archive_policy_def.timespan:
+            with timeutils.StopWatch() as sw:
+                oldest_point_to_keep = ts.last - datetime.timedelta(
+                    seconds=archive_policy_def.timespan)
+                self._delete_metric_measures_before(
+                    metric, aggregation, archive_policy_def.granularity,
+                    oldest_point_to_keep)
+                LOG.debug("Expire measures for %s/%s/%s in %.2fs"
+                          % (metric.id, aggregation,
+                             archive_policy_def.granularity, sw.elapsed()))
 
     def add_measures(self, metric, measures):
         self._store_measures(metric, msgpackutils.dumps(
@@ -138,30 +218,91 @@ class CarbonaraBasedStorage(storage.StorageDriver):
         raise NotImplementedError
 
     @staticmethod
-    def _list_metric_with_measures_to_process(metric_id):
+    def _list_metric_with_measures_to_process(full=False):
         raise NotImplementedError
 
     @staticmethod
     def _pending_measures_to_process_count(metric_id):
         raise NotImplementedError
 
-    def delete_metric(self, metric):
-        with self._lock(metric.id):
+    def delete_metric(self, metric, sync=False):
+        with self._lock(metric.id)(blocking=sync):
+            # If the metric has never been upgraded, we need to delete this
+            # here too
+            self._delete_metric_archives(metric)
             self._delete_metric(metric)
+
+    def _delete_metric_measures_before(self, metric, aggregation_method,
+                                       granularity, timestamp):
+        """Delete measures for a metric before a timestamp."""
+        ts = carbonara.AggregatedTimeSerie.get_split_key(
+            timestamp, granularity)
+        for key in self._list_split_keys_for_metric(
+                metric, aggregation_method, granularity):
+            # NOTE(jd) Only delete if the key is strictly inferior to
+            # the timestamp; we don't delete any timeserie split that
+            # contains our timestamp, so we prefer to keep a bit more
+            # than deleting too much
+            if key < ts:
+                self._delete_metric_measures(
+                    metric, key, aggregation_method, granularity)
+
+    @staticmethod
+    def _delete_metric_measures(metric, timestamp_key,
+                                aggregation, granularity):
+        raise NotImplementedError
 
     @staticmethod
     def _unserialize_measures(data):
         return msgpackutils.loads(data)
 
-    def measures_report(self):
-        metrics_to_process = self._list_metric_with_measures_to_process()
-        return dict(
-            (metric_id, self._pending_measures_to_process_count(metric_id))
-            for metric_id in metrics_to_process)
+    def measures_report(self, details=True):
+        metrics, measures, full_details = self._build_report(details)
+        report = {'summary': {'metrics': metrics, 'measures': measures}}
+        if full_details is not None:
+            report['details'] = full_details
+        return report
 
-    def process_measures(self, indexer, sync=False):
-        metrics_to_process = self._list_metric_with_measures_to_process()
-        metrics = indexer.get_metrics(metrics_to_process)
+    def _check_for_metric_upgrade(self, metric):
+        lock = self._lock(metric.id)
+        with lock:
+            for agg_method in metric.archive_policy.aggregation_methods:
+                LOG.debug(
+                    "Checking if the metric %s needs migration for %s"
+                    % (metric, agg_method))
+                try:
+                    data = self._get_metric_archive(metric, agg_method)
+                except storage.MetricDoesNotExist:
+                    # Just try the next metric, this one has no measures
+                    break
+                except storage.AggregationDoesNotExist:
+                    # This should not happen, but you never know.
+                    LOG.warn(
+                        "Metric %s does not have an archive "
+                        "for aggregation %s, "
+                        "no migration can be done" % (metric, agg_method))
+                else:
+                    LOG.info("Migrating metric %s to new format" % metric)
+                    archive = carbonara.TimeSerieArchive.unserialize(data)
+                    for ts in archive.agg_timeseries:
+                        # Store each AggregatedTimeSerie independently
+                        for key, split in ts.split():
+                            self._store_metric_measures(metric, key,
+                                                        ts.aggregation_method,
+                                                        ts.sampling,
+                                                        split.serialize())
+            self._delete_metric_archives(metric)
+            LOG.info("Migrated metric %s to new format" % metric)
+
+    def upgrade(self, index):
+        self._map_in_thread(
+            self._check_for_metric_upgrade,
+            ((metric,) for metric in index.list_metrics()))
+
+    def process_measures(self, indexer, block_size, sync=False):
+        metrics_to_process = self._list_metric_with_measures_to_process(
+            block_size, full=sync)
+        metrics = indexer.list_metrics(ids=metrics_to_process)
         # This build the list of deleted metrics, i.e. the metrics we have
         # measures to process for but that are not in the indexer anymore.
         deleted_metrics_id = (set(map(uuid.UUID, metrics_to_process))
@@ -230,8 +371,9 @@ class CarbonaraBasedStorage(storage.StorageDriver):
                         def _map_add_measures(bound_timeserie):
                             self._map_in_thread(
                                 self._add_measures,
-                                list((aggregation, metric, bound_timeserie)
-                                     for aggregation in agg_methods))
+                                ((aggregation, d, metric, bound_timeserie)
+                                 for aggregation in agg_methods
+                                 for d in metric.archive_policy.definition))
 
                         with timeutils.StopWatch() as sw:
                             ts.set_values(

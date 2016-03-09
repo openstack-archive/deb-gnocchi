@@ -1,5 +1,6 @@
 # -*- encoding: utf-8 -*-
 #
+# Copyright © 2016 Red Hat, Inc.
 # Copyright © 2014-2015 eNovance
 #
 # Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -13,6 +14,7 @@
 # WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 # License for the specific language governing permissions and limitations
 # under the License.
+import itertools
 import uuid
 
 from oslo_log import log
@@ -54,24 +56,8 @@ def abort(status_code, detail='', headers=None, comment=None, **kw):
 
 def get_user_and_project():
     headers = pecan.request.headers
-    # NOTE(jd) If user_id or project_id are UUID, try to convert them in the
-    # proper dashed format. It's indeed possible that a middleware passes
-    # theses UUID without the dash representation. It's valid, we can parse,
-    # but the policy module won't see the equality in the string
-    # representations.
     user_id = headers.get("X-User-Id")
-    if user_id:
-        try:
-            user_id = six.text_type(uuid.UUID(user_id))
-        except Exception:
-            abort(400, "Malformed X-User-Id")
-
     project_id = headers.get("X-Project-Id")
-    if project_id:
-        try:
-            project_id = six.text_type(uuid.UUID(project_id))
-        except Exception:
-            abort(400, "Malformed X-Project-Id")
     return (user_id, project_id)
 
 
@@ -325,7 +311,7 @@ class ArchivePoliciesController(rest.RestController):
         except indexer.ArchivePolicyAlreadyExists as e:
             abort(409, e)
 
-        location = "/v1/archive_policy/" + ap.name
+        location = "/archive_policy/" + ap.name
         set_resp_location_hdr(location)
         pecan.response.status = 201
         return ap
@@ -356,7 +342,7 @@ class ArchivePolicyRulesController(rest.RestController):
         except indexer.ArchivePolicyRuleAlreadyExists as e:
             abort(409, e)
 
-        location = "/v1/archive_policy_rule/" + ap.name
+        location = "/archive_policy_rule/" + ap.name
         set_resp_location_hdr(location)
         pecan.response.status = 201
         return ap
@@ -407,7 +393,7 @@ class AggregatedMetricController(rest.RestController):
                                            stop=None, aggregation='mean',
                                            needed_overlap=100.0):
         # Check RBAC policy
-        metrics = pecan.request.indexer.get_metrics(metric_ids)
+        metrics = pecan.request.indexer.list_metrics(ids=metric_ids)
         missing_metric_ids = (set(metric_ids)
                               - set(six.text_type(m.id) for m in metrics))
         if missing_metric_ids:
@@ -586,14 +572,15 @@ class MetricsController(rest.RestController):
             metric_id = uuid.UUID(id)
         except ValueError:
             abort(404, indexer.NoSuchMetric(id))
-        metrics = pecan.request.indexer.get_metrics([metric_id])
+        metrics = pecan.request.indexer.list_metrics(
+            id=metric_id, details=True)
         if not metrics:
             abort(404, indexer.NoSuchMetric(id))
         return MetricController(metrics[0]), remainder
 
     _MetricSchema = voluptuous.Schema({
-        "user_id": UUID,
-        "project_id": UUID,
+        "user_id": six.text_type,
+        "project_id": six.text_type,
         "archive_policy_name": six.text_type,
         "name": six.text_type,
     })
@@ -647,7 +634,7 @@ class MetricsController(rest.RestController):
                 archive_policy_name=body['archive_policy_name'])
         except indexer.NoSuchArchivePolicy as e:
             abort(400, e)
-        set_resp_location_hdr("/v1/metric/" + str(m.id))
+        set_resp_location_hdr("/metric/" + str(m.id))
         pecan.response.status = 201
         return m
 
@@ -668,8 +655,12 @@ class MetricsController(rest.RestController):
         else:
             user_id = kwargs.get('user_id')
             project_id = kwargs.get('project_id')
-        return pecan.request.indexer.list_metrics(
-            user_id, project_id)
+        attr_filter = {}
+        if user_id is not None:
+            attr_filter['creater_by_user_id'] = user_id
+        if project_id is not None:
+            attr_filter['created_by_project_id'] = project_id
+        return pecan.request.indexer.list_metrics(**attr_filter)
 
 
 _MetricsSchema = voluptuous.Schema({
@@ -807,11 +798,10 @@ def etag_set_headers(obj):
 
 def ResourceSchema(schema):
     base_schema = {
-        "id": utils.ResourceUUID,
         voluptuous.Optional('started_at'): Timestamp,
         voluptuous.Optional('ended_at'): Timestamp,
-        voluptuous.Optional('user_id'): voluptuous.Any(None, UUID),
-        voluptuous.Optional('project_id'): voluptuous.Any(None, UUID),
+        voluptuous.Optional('user_id'): voluptuous.Any(None, six.text_type),
+        voluptuous.Optional('project_id'): voluptuous.Any(None, six.text_type),
         voluptuous.Optional('metrics'): MetricsSchema,
     }
     base_schema.update(schema)
@@ -940,41 +930,13 @@ class VolumeResourceController(GenericResourceController):
     })
 
 
-class CephAccountResourceController(GenericResourceController):
-    _resource_type = 'ceph_account'
+def ResourceID(value):
+    return (six.text_type(value), utils.ResourceUUID(value))
 
 
-class NetworkResourceController(GenericResourceController):
-    _resource_type = 'network'
-
-
-class IdentityResourceController(GenericResourceController):
-    _resource_type = 'identity'
-
-
-class IPMIResourceController(GenericResourceController):
-    _resource_type = 'ipmi'
-
-
-class StackResourceController(GenericResourceController):
-    _resource_type = 'stack'
-
-
-class ImageResourceController(GenericResourceController):
-    _resource_type = 'image'
-
-    Resource = ResourceSchema({
-        "name": six.text_type,
-        "container_format": six.text_type,
-        "disk_format": six.text_type,
-    })
-
-
-class GenericResourcesController(rest.RestController):
-    _resource_type = 'generic'
-    _resource_rest_class = GenericResourceController
-
-    Resource = GenericResourceController.Resource
+class ResourcesController(rest.RestController):
+    def __init__(self, resource_type):
+        self._resource_type = resource_type
 
     @pecan.expose()
     def _lookup(self, id, *remainder):
@@ -982,7 +944,14 @@ class GenericResourcesController(rest.RestController):
 
     @pecan.expose('json')
     def post(self):
-        body = deserialize_and_validate(self.Resource)
+        # NOTE(sileht): we need to copy the dict because when change it
+        # and we don't want that next patch call have the "id"
+        schema = dict(schema_for(self._resource_type))
+        schema["id"] = ResourceID
+
+        body = deserialize_and_validate(schema)
+        body["original_resource_id"], body["id"] = body["id"]
+
         target = {
             "resource_type": self._resource_type,
         }
@@ -1001,7 +970,7 @@ class GenericResourcesController(rest.RestController):
             abort(400, e)
         except indexer.ResourceAlreadyExists as e:
             abort(409, e)
-        set_resp_location_hdr("/v1/resource/"
+        set_resp_location_hdr("/resource/"
                               + self._resource_type + "/"
                               + six.text_type(resource.id))
         etag_set_headers(resource)
@@ -1106,9 +1075,9 @@ class ResourcesController(rest.RestController):
     @pecan.expose('json')
     def get_all(self):
         return dict(
-            (type_name,
-             pecan.request.application_url + '/v1/resource/' + type_name)
-            for type_name in self.resources_ctrl_by_type.keys())
+            (ext.name,
+             pecan.request.application_url + '/resource/' + ext.name)
+            for ext in RESOURCE_SCHEMA_MANAGER)
 
     @pecan.expose()
     def _lookup(self, resource_type, *remainder):
@@ -1151,8 +1120,7 @@ class SearchResourceTypeController(rest.RestController):
         )
     )
 
-    @pecan.expose('json')
-    def post(self, **kwargs):
+    def _search(self, **kwargs):
         if pecan.request.body:
             attr_filter = deserialize_and_validate(self.ResourceSearchSchema)
         else:
@@ -1175,13 +1143,17 @@ class SearchResourceTypeController(rest.RestController):
             else:
                 attr_filter = policy_filter
 
+        return pecan.request.indexer.list_resources(
+            self._resource_type,
+            attribute_filter=attr_filter,
+            details=details,
+            history=history,
+            **pagination_opts)
+
+    @pecan.expose('json')
+    def post(self, **kwargs):
         try:
-            return pecan.request.indexer.list_resources(
-                self._resource_type,
-                attribute_filter=attr_filter,
-                details=details,
-                history=history,
-                **pagination_opts)
+            return self._search(**kwargs)
         except indexer.IndexerException as e:
             abort(400, e)
 
@@ -1254,7 +1226,8 @@ class SearchMetricController(rest.RestController):
 
     @pecan.expose('json')
     def post(self, metric_id, start=None, stop=None, aggregation='mean'):
-        metrics = pecan.request.indexer.get_metrics(arg_to_list(metric_id))
+        metrics = pecan.request.indexer.list_metrics(
+            ids=arg_to_list(metric_id))
 
         for metric in metrics:
             enforce("search metric", metric)
@@ -1288,40 +1261,146 @@ class SearchMetricController(rest.RestController):
             abort(400, e)
 
 
+class ResourcesMetricsMeasuresBatchController(rest.RestController):
+    MeasuresBatchSchema = voluptuous.Schema(
+        {utils.ResourceUUID: {six.text_type: [MeasureSchema]}}
+    )
+
+    @pecan.expose()
+    def post(self):
+        body = deserialize_and_validate(self.MeasuresBatchSchema)
+
+        known_metrics = []
+        unknown_metrics = []
+        for resource_id in body:
+            names = body[resource_id].keys()
+            metrics = pecan.request.indexer.list_metrics(
+                names=names, resource_id=resource_id)
+
+            if len(names) != len(metrics):
+                known_names = [m.name for m in metrics]
+                unknown_metrics.extend(
+                    ["%s/%s" % (six.text_type(resource_id), m)
+                     for m in names if m not in known_names])
+
+            known_metrics.extend(metrics)
+
+        if unknown_metrics:
+            abort(400, "Unknown metrics: %s" % ", ".join(
+                sorted(unknown_metrics)))
+
+        for metric in known_metrics:
+            enforce("post measures", metric)
+
+        for metric in known_metrics:
+            measures = body[metric.resource_id][metric.name]
+            pecan.request.storage.add_measures(metric, measures)
+
+        pecan.response.status = 202
+
+
+class MetricsMeasuresBatchController(rest.RestController):
+    # NOTE(sileht): we don't allow to mix both formats
+    # to not have to deal with id collision that can
+    # occurs between a metric_id and a resource_id.
+    # Because while json allow duplicate keys in dict payload
+    # only the last key will be retain by json python module to
+    # build the python dict.
+    MeasuresBatchSchema = voluptuous.Schema(
+        {UUID: [MeasureSchema]}
+    )
+
+    @pecan.expose()
+    def post(self):
+        body = deserialize_and_validate(self.MeasuresBatchSchema)
+        metrics = pecan.request.indexer.list_metrics(ids=body.keys())
+
+        if len(metrics) != len(body):
+            missing_metrics = sorted(set(body) - set(m.id for m in metrics))
+            abort(400, "Unknown metrics: %s" % ", ".join(
+                six.moves.map(str, missing_metrics)))
+
+        for metric in metrics:
+            enforce("post measures", metric)
+
+        for metric in metrics:
+            pecan.request.storage.add_measures(metric, body[metric.id])
+
+        pecan.response.status = 202
+
+
 class SearchController(object):
     resource = SearchResourceController()
     metric = SearchMetricController()
 
 
-class AggregationResource(rest.RestController):
+class AggregationResourceController(rest.RestController):
     def __init__(self, resource_type, metric_name):
         self.resource_type = resource_type
         self.metric_name = metric_name
 
     @pecan.expose('json')
     def post(self, start=None, stop=None, aggregation='mean',
-             needed_overlap=100.0):
-        resources = SearchResourceTypeController(self.resource_type).post()
-        metrics = []
-        for r in resources:
-            m = r.get_metric(self.metric_name)
-            if m:
-                metrics.append(m)
-        return AggregatedMetricController.get_cross_metric_measures_from_objs(
-            metrics, start, stop, aggregation, needed_overlap)
+             granularity=None, needed_overlap=100.0,
+             groupby=None):
+        # First, set groupby in the right format: a sorted list of unique
+        # strings.
+        groupby = sorted(set(arg_to_list(groupby)))
+
+        # NOTE(jd) Sort by groupby so we are sure we do not return multiple
+        # groups when using itertools.groupby later.
+        try:
+            resources = SearchResourceTypeController(
+                self.resource_type)._search(sort=groupby)
+        except indexer.InvalidPagination:
+            abort(400, "Invalid groupby attribute")
+        except indexer.IndexerException as e:
+            abort(400, e)
+
+        if resources is None:
+            return []
+
+        if not groupby:
+            metrics = list(filter(None,
+                                  (r.get_metric(self.metric_name)
+                                   for r in resources)))
+            return AggregatedMetricController.get_cross_metric_measures_from_objs(  # noqa
+                metrics, start, stop, aggregation, granularity, needed_overlap)
+
+        def groupper(r):
+            return tuple((attr, r[attr]) for attr in groupby)
+
+        results = []
+        for key, resources in itertools.groupby(resources, groupper):
+            metrics = list(filter(None,
+                                  (r.get_metric(self.metric_name)
+                                   for r in resources)))
+            results.append({
+                "group": dict(key),
+                "measures": AggregatedMetricController.get_cross_metric_measures_from_objs(  # noqa
+                    metrics, start, stop, aggregation,
+                    granularity, needed_overlap)
+            })
+
+        return results
 
 
-class Aggregation(rest.RestController):
+class AggregationController(rest.RestController):
     _custom_actions = {
         'metric': ['GET'],
     }
 
     @pecan.expose()
-    def _lookup(self, object_type, subtype, key, metric_name, *remainder):
-        if object_type == 'resource' and key == 'metric':
-            return AggregationResource(subtype, metric_name), remainder
-        return super(Aggregation, self)._lookup(object_type, subtype, key,
-                                                metric_name, *remainder)
+    def _lookup(self, object_type, resource_type, key, metric_name,
+                *remainder):
+        if object_type != "resource" or key != "metric":
+            # NOTE(sileht): we want the raw 404 message here
+            # so use directly pecan
+            pecan.abort(404)
+        elif resource_type not in RESOURCE_SCHEMA_MANAGER:
+            abort(404, indexer.NoSuchResourceType(resource_type))
+        return AggregationResourceController(resource_type,
+                                             metric_name), remainder
 
     @pecan.expose('json')
     def get_metric(self, metric=None, start=None,
@@ -1346,10 +1425,30 @@ class CapabilityController(rest.RestController):
 class StatusController(rest.RestController):
     @staticmethod
     @pecan.expose('json')
-    def get():
+    def get(details=True):
         enforce("get status", {})
-        report = pecan.request.storage.measures_report()
-        return {"storage": {"measures_to_process": report}}
+        report = pecan.request.storage.measures_report(details)
+        report_dict = {"storage": {"summary": report['summary']}}
+        if 'details' in report:
+            report_dict["storage"]["measures_to_process"] = report['details']
+        return report_dict
+
+
+class MetricsBatchController(object):
+    measures = MetricsMeasuresBatchController()
+
+
+class ResourcesMetricsBatchController(object):
+    measures = ResourcesMetricsMeasuresBatchController()
+
+
+class ResourcesBatchController(object):
+    metrics = ResourcesMetricsBatchController()
+
+
+class BatchController(object):
+    metrics = MetricsBatchController()
+    resources = ResourcesBatchController()
 
 
 class V1Controller(object):
@@ -1360,8 +1459,9 @@ class V1Controller(object):
             "archive_policy": ArchivePoliciesController(),
             "archive_policy_rule": ArchivePolicyRulesController(),
             "metric": MetricsController(),
-            "resource": ResourcesController(),
-            "aggregation": Aggregation(),
+            "batch": BatchController(),
+            "resource": ResourcesByTypeController(),
+            "aggregation": AggregationController(),
             "capabilities": CapabilityController(),
             "status": StatusController(),
         }
@@ -1374,18 +1474,16 @@ class V1Controller(object):
             "version": "1.0",
             "links": [
                 {"rel": "self",
-                 "href": pecan.request.application_url + "/v1"}
+                 "href": pecan.request.application_url}
             ] + [
                 {"rel": name,
-                 "href": pecan.request.application_url + "/v1/" + name}
+                 "href": pecan.request.application_url + "/" + name}
                 for name in sorted(self.sub_controllers)
             ]
         }
 
 
-class RootController(object):
-    v1 = V1Controller()
-
+class VersionsController(object):
     @staticmethod
     @pecan.expose('json')
     def index():

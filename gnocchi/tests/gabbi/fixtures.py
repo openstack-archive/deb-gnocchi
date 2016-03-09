@@ -34,17 +34,15 @@ from gnocchi import storage
 
 
 # NOTE(chdent): Hack to restore semblance of global configuration to
-# pass to the WSGI app used per test suite. CONF is the olso
-# configuration, PECAN_CONF is the pecan application configuration of
+# pass to the WSGI app used per test suite. LOAD_APP_KWARGS are the olso
+# configuration, and the pecan application configuration of
 # which the critical part is a reference to the current indexer.
-CONF = None
-PECAN_CONF = None
+LOAD_APP_KWARGS = None
 
 
 def setup_app():
-    global CONF
-    global PECAN_CONF
-    return app.setup_app(config=PECAN_CONF, cfg=CONF)
+    global LOAD_APP_KWARGS
+    return app.load_app(**LOAD_APP_KWARGS)
 
 
 class ConfigFixture(fixture.GabbiFixture):
@@ -68,17 +66,17 @@ class ConfigFixture(fixture.GabbiFixture):
     def start_fixture(self):
         """Create necessary temp files and do the config dance."""
 
-        global CONF
-        global PECAN_CONF
-
-        PECAN_CONF = {}
-        PECAN_CONF.update(app.PECAN_CONFIG)
+        global LOAD_APP_KWARGS
 
         data_tmp_dir = tempfile.mkdtemp(prefix='gnocchi')
 
         conf = service.prepare_service([])
 
-        CONF = self.conf = conf
+        conf.set_override('paste_config',
+                          os.path.abspath('etc/gnocchi/api-paste.ini'),
+                          'api')
+
+        self.conf = conf
         self.tmp_dir = data_tmp_dir
 
         # Use the indexer set in the conf, unless we have set an
@@ -99,10 +97,6 @@ class ConfigFixture(fixture.GabbiFixture):
         # and thus should override conf settings.
         if 'DEVSTACK_GATE_TEMPEST' not in os.environ:
             conf.set_override('driver', 'file', 'storage')
-            self.conf.set_override(
-                'coordination_url',
-                os.getenv("GNOCCHI_COORDINATION_URL", "ipc://"),
-                'storage')
             conf.set_override('policy_file',
                               os.path.abspath('etc/gnocchi/policy.json'),
                               group="oslo_policy")
@@ -121,8 +115,6 @@ class ConfigFixture(fixture.GabbiFixture):
         index.connect()
         index.upgrade()
 
-        PECAN_CONF['indexer'] = index
-
         conf.set_override('pecan_debug', False, 'api')
 
         # Turn off any middleware.
@@ -132,6 +124,16 @@ class ConfigFixture(fixture.GabbiFixture):
         conf.set_override('max_limit', 7, 'api')
 
         self.index = index
+
+        s = storage.get_driver(conf)
+        s.upgrade(index)
+
+        LOAD_APP_KWARGS = {
+            'appname': 'gnocchi+noauth',
+            'storage': s,
+            'indexer': index,
+            'conf': conf,
+        }
 
         # start up a thread to async process measures
         self.metricd_thread = MetricdThread(index, storage.get_driver(conf))

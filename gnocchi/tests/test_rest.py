@@ -149,7 +149,7 @@ class TestingApp(webtest.TestApp):
         if self.auth:
             req.headers['X-Auth-Token'] = self.token
         response = super(TestingApp, self).do_request(req, *args, **kwargs)
-        self.storage.process_background_tasks(self.indexer, True)
+        self.storage.process_background_tasks(self.indexer, sync=True)
         return response
 
 
@@ -160,65 +160,45 @@ class RestTest(tests_base.TestCase, testscenarios.TestWithScenarios):
         ('keystone', dict(auth=True)),
     ]
 
-    @classmethod
-    def app_factory(cls, global_config, **local_conf):
-        return app.setup_app(cls.pecan_config, cls.conf)
-
-    @classmethod
-    def keystone_authtoken_filter_factory(cls, global_conf, **local_conf):
-        def auth_filter(app):
-            return keystonemiddleware.auth_token.AuthProtocol(app, {
-                "oslo_config_project": "gnocchi",
-                "oslo_config_config": cls.conf,
-            })
-        return auth_filter
-
     def setUp(self):
         super(RestTest, self).setUp()
         self.conf.set_override('paste_config',
-                               self.path_get('gnocchi/tests/api-paste.ini'),
+                               self.path_get('etc/gnocchi/api-paste.ini'),
                                group="api")
-        pecan_config = {}
-        pecan_config.update(app.PECAN_CONFIG)
-        pecan_config['indexer'] = self.index
-        pecan_config['storage'] = self.storage
-        pecan_config['not_implemented_middleware'] = False
 
-        # NOTE(sileht): We register keystonemiddleware options
-        for group, options in ks_opts.list_auth_token_opts():
-            self.conf.register_opts(list(options), group=group)
+        self.auth_token_fixture = self.useFixture(
+            ksm_fixture.AuthTokenFixture())
+        self.auth_token_fixture.add_token_data(
+            is_v2=True,
+            token_id=TestingApp.VALID_TOKEN_ADMIN,
+            user_id=TestingApp.USER_ID_ADMIN,
+            user_name='adminusername',
+            project_id=TestingApp.PROJECT_ID_ADMIN,
+            role_list=['admin'])
+        self.auth_token_fixture.add_token_data(
+            is_v2=True,
+            token_id=TestingApp.VALID_TOKEN,
+            user_id=TestingApp.USER_ID,
+            user_name='myusername',
+            project_id=TestingApp.PROJECT_ID,
+            role_list=["member"])
+        self.auth_token_fixture.add_token_data(
+            is_v2=True,
+            token_id=TestingApp.VALID_TOKEN_2,
+            user_id=TestingApp.USER_ID_2,
+            user_name='myusername2',
+            project_id=TestingApp.PROJECT_ID_2,
+            role_list=["member"])
 
-        self.conf.set_override("cache", TestingApp.CACHE_NAME,
-                               group='keystone_authtoken')
-        # TODO(jd) Override these options with values. They are not used, but
-        # if they are None (their defaults), the keystone authtoken middleware
-        # prints a warning… :( When the bug is fixed we can remove that!
-        # See https://bugs.launchpad.net/keystonemiddleware/+bug/1429179
-        try:
-            self.conf.set_override("identity_uri", "foobar",
-                                   group="keystone_authtoken")
-        except oslo_config.cfg.NoSuchOptError:
-            # This option does not exist in keystonemiddleware>=4
-            pass
-        self.conf.set_override("auth_uri", "foobar",
-                               group="keystone_authtoken")
-        self.conf.set_override("delay_auth_decision",
-                               not self.auth,
-                               group="keystone_authtoken")
-
-        RestTest.pecan_config = pecan_config
-        RestTest.conf = self.conf
-
-        # TODO(chdent) Linting is turned off until a
-        # keystonemiddleware bug is resolved.
-        # See: https://bugs.launchpad.net/keystonemiddleware/+bug/1466499
-        self.app = TestingApp(app.load_app(self.conf,
-                                           appname="testing+auth"
-                                           if self.auth else "testing"),
+        self.app = TestingApp(app.load_app(conf=self.conf,
+                                           appname="gnocchi+auth"
+                                           if self.auth else "gnocchi+noauth",
+                                           indexer=self.index,
+                                           storage=self.storage,
+                                           not_implemented_middleware=False),
                               storage=self.storage,
                               indexer=self.index,
-                              auth=self.auth,
-                              lint=False)
+                              auth=self.auth)
 
     def test_deserialize_force_json(self):
         with self.app.use_admin_user():
@@ -850,6 +830,8 @@ class ResourceTest(RestTest):
         # Set an id in the attribute
         self.attributes['id'] = str(uuid.uuid4())
         self.resource = self.attributes.copy()
+        # Set original_resource_id
+        self.resource['original_resource_id'] = self.resource['id']
         if self.auth:
             self.resource['created_by_user_id'] = FakeMemcache.USER_ID
             self.resource['created_by_project_id'] = FakeMemcache.PROJECT_ID
@@ -1520,6 +1502,20 @@ class ResourceTest(RestTest):
         self.assertGreaterEqual(len(resources), 1)
         self.assertEqual(result, resources[0])
 
+    def test_search_resource_by_original_resource_id(self):
+        result = self.app.post_json(
+            "/v1/resource/" + self.resource_type,
+            params=self.attributes)
+        created_resource = json.loads(result.text)
+        original_id = created_resource['original_resource_id']
+        result = self.app.post_json(
+            "/v1/search/resource/" + self.resource_type,
+            params={"eq": {"original_resource_id": original_id}},
+            status=200)
+        resources = json.loads(result.text)
+        self.assertGreaterEqual(len(resources), 1)
+        self.assertEqual(created_resource, resources[0])
+
     def test_search_resources_by_user(self):
         u1 = str(uuid.uuid4())
         self.attributes['user_id'] = u1
@@ -2026,8 +2022,8 @@ class GenericResourceTest(RestTest):
             params={
                 "id": resource_id,
                 "started_at": "2014-01-01 02:02:02",
-                "user_id": FakeMemcache.USER_ID_2,
-                "project_id": FakeMemcache.PROJECT_ID_2,
+                "user_id": TestingApp.USER_ID_2,
+                "project_id": TestingApp.PROJECT_ID_2,
                 "metrics": {"foobar": {"archive_policy_name": "low"}},
             })
 

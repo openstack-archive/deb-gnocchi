@@ -62,8 +62,8 @@ class TestIndexerDriver(tests_base.TestCase):
                           self.index.delete_archive_policy,
                           str(uuid.uuid4()))
         metric_id = uuid.uuid4()
-        self.index.create_metric(metric_id, uuid.uuid4(),
-                                 uuid.uuid4(), "low")
+        self.index.create_metric(metric_id, str(uuid.uuid4()),
+                                 str(uuid.uuid4()), "low")
         self.assertRaises(indexer.ArchivePolicyInUse,
                           self.index.delete_archive_policy,
                           "low")
@@ -84,21 +84,21 @@ class TestIndexerDriver(tests_base.TestCase):
 
     def test_create_metric(self):
         r1 = uuid.uuid4()
-        user = uuid.uuid4()
-        project = uuid.uuid4()
+        user = str(uuid.uuid4())
+        project = str(uuid.uuid4())
         m = self.index.create_metric(r1, user, project, "low")
         self.assertEqual(r1, m.id)
         self.assertEqual(m.created_by_user_id, user)
         self.assertEqual(m.created_by_project_id, project)
         self.assertIsNone(m.name)
         self.assertIsNone(m.resource_id)
-        m2 = self.index.get_metrics([r1])
+        m2 = self.index.list_metrics(id=r1)
         self.assertEqual([m], m2)
 
     def test_expunge_metric(self):
         r1 = uuid.uuid4()
-        user = uuid.uuid4()
-        project = uuid.uuid4()
+        user = str(uuid.uuid4())
+        project = str(uuid.uuid4())
         m = self.index.create_metric(r1, user, project, "low")
         self.index.delete_metric(m.id)
         try:
@@ -117,8 +117,8 @@ class TestIndexerDriver(tests_base.TestCase):
 
     def test_create_resource(self):
         r1 = uuid.uuid4()
-        user = uuid.uuid4()
-        project = uuid.uuid4()
+        user = str(uuid.uuid4())
+        project = str(uuid.uuid4())
         rc = self.index.create_resource('generic', r1, user, project)
         self.assertIsNotNone(rc.started_at)
         self.assertIsNotNone(rc.revision_start)
@@ -131,6 +131,7 @@ class TestIndexerDriver(tests_base.TestCase):
                           "project_id": None,
                           "started_at": rc.started_at,
                           "ended_at": None,
+                          "original_resource_id": None,
                           "type": "generic",
                           "metrics": {}},
                          rc.jsonify())
@@ -142,7 +143,7 @@ class TestIndexerDriver(tests_base.TestCase):
         e = uuid.uuid4()
         try:
             self.index.create_resource(
-                'generic', uuid.uuid4(), uuid.uuid4(), uuid.uuid4(),
+                'generic', uuid.uuid4(), str(uuid.uuid4()), str(uuid.uuid4()),
                 metrics={"foo": e})
         except indexer.NoSuchMetric as ex:
             self.assertEqual(e, ex.metric)
@@ -151,8 +152,8 @@ class TestIndexerDriver(tests_base.TestCase):
 
     def test_create_resource_already_exists(self):
         r1 = uuid.uuid4()
-        user = uuid.uuid4()
-        project = uuid.uuid4()
+        user = str(uuid.uuid4())
+        project = str(uuid.uuid4())
         self.index.create_resource('generic', r1, user, project)
         self.assertRaises(indexer.ResourceAlreadyExists,
                           self.index.create_resource,
@@ -160,19 +161,19 @@ class TestIndexerDriver(tests_base.TestCase):
 
     def test_create_resource_with_new_metrics(self):
         r1 = uuid.uuid4()
-        user = uuid.uuid4()
-        project = uuid.uuid4()
+        user = str(uuid.uuid4())
+        project = str(uuid.uuid4())
         rc = self.index.create_resource(
             'generic', r1, user, project,
             metrics={"foobar": {"archive_policy_name": "low"}})
         self.assertEqual(1, len(rc.metrics))
-        m = self.index.get_metrics([rc.metrics[0].id])
+        m = self.index.list_metrics(id=rc.metrics[0].id)
         self.assertEqual(m[0], rc.metrics[0])
 
     def _do_test_create_instance(self, server_group=None):
         r1 = uuid.uuid4()
-        user = uuid.uuid4()
-        project = uuid.uuid4()
+        user = str(uuid.uuid4())
+        project = str(uuid.uuid4())
         kwargs = {'server_group': server_group} if server_group else {}
 
         rc = self.index.create_resource('instance', r1, user, project,
@@ -197,6 +198,7 @@ class TestIndexerDriver(tests_base.TestCase):
                           "host": "foo",
                           "image_ref": "http://foo/bar",
                           "flavor_id": "1",
+                          "original_resource_id": None,
                           "metrics": {}},
                          rc.jsonify())
         rg = self.index.get_resource('generic', r1, with_metrics=True)
@@ -212,15 +214,16 @@ class TestIndexerDriver(tests_base.TestCase):
 
     def test_delete_resource(self):
         r1 = uuid.uuid4()
-        self.index.create_resource('generic', r1, uuid.uuid4(), uuid.uuid4())
+        self.index.create_resource('generic', r1, str(uuid.uuid4()),
+                                   str(uuid.uuid4()))
         self.index.delete_resource(r1)
         self.assertRaises(indexer.NoSuchResource,
                           self.index.delete_resource,
                           r1)
 
     def test_delete_resource_with_metrics(self):
-        user = uuid.uuid4()
-        project = uuid.uuid4()
+        user = str(uuid.uuid4())
+        project = str(uuid.uuid4())
         e1 = uuid.uuid4()
         e2 = uuid.uuid4()
         self.index.create_metric(e1, user, project,
@@ -234,7 +237,7 @@ class TestIndexerDriver(tests_base.TestCase):
         self.assertRaises(indexer.NoSuchResource,
                           self.index.delete_resource,
                           r1)
-        metrics = self.index.get_metrics([e1, e2])
+        metrics = self.index.list_metrics(ids=[e1, e2])
         self.assertEqual([], metrics)
 
     def test_delete_resource_non_existent(self):
@@ -246,8 +249,8 @@ class TestIndexerDriver(tests_base.TestCase):
     def test_create_resource_with_start_timestamp(self):
         r1 = uuid.uuid4()
         ts = utils.datetime_utc(2014, 1, 1, 23, 34, 23, 1234)
-        user = uuid.uuid4()
-        project = uuid.uuid4()
+        user = str(uuid.uuid4())
+        project = str(uuid.uuid4())
         rc = self.index.create_resource(
             'generic',
             r1, user, project,
@@ -261,6 +264,7 @@ class TestIndexerDriver(tests_base.TestCase):
                           "project_id": None,
                           "started_at": ts,
                           "ended_at": None,
+                          "original_resource_id": None,
                           "type": "generic",
                           "metrics": {}}, rc.jsonify())
         r = self.index.get_resource('generic', r1, with_metrics=True)
@@ -270,8 +274,8 @@ class TestIndexerDriver(tests_base.TestCase):
         r1 = uuid.uuid4()
         e1 = uuid.uuid4()
         e2 = uuid.uuid4()
-        user = uuid.uuid4()
-        project = uuid.uuid4()
+        user = str(uuid.uuid4())
+        project = str(uuid.uuid4())
         self.index.create_metric(e1,
                                  user, project,
                                  archive_policy_name="low")
@@ -291,6 +295,7 @@ class TestIndexerDriver(tests_base.TestCase):
                           "project_id": None,
                           "started_at": rc.started_at,
                           "ended_at": None,
+                          "original_resource_id": None,
                           "type": "generic",
                           "metrics": {'foo': str(e1), 'bar': str(e2)}},
                          rc.jsonify())
@@ -306,6 +311,7 @@ class TestIndexerDriver(tests_base.TestCase):
                           "ended_at": None,
                           "user_id": None,
                           "project_id": None,
+                          "original_resource_id": None,
                           "metrics": {'foo': str(e1), 'bar': str(e2)}},
                          r.jsonify())
 
@@ -320,8 +326,8 @@ class TestIndexerDriver(tests_base.TestCase):
 
     def test_update_resource_end_timestamp(self):
         r1 = uuid.uuid4()
-        user = uuid.uuid4()
-        project = uuid.uuid4()
+        user = str(uuid.uuid4())
+        project = str(uuid.uuid4())
         self.index.create_resource('generic', r1, user, project)
         self.index.update_resource(
             'generic',
@@ -356,14 +362,15 @@ class TestIndexerDriver(tests_base.TestCase):
                           "project_id": None,
                           "type": "generic",
                           "started_at": r.started_at,
+                          "original_resource_id": None,
                           "metrics": {}}, r.jsonify())
 
     def test_update_resource_metrics(self):
         r1 = uuid.uuid4()
         e1 = uuid.uuid4()
         e2 = uuid.uuid4()
-        user = uuid.uuid4()
-        project = uuid.uuid4()
+        user = str(uuid.uuid4())
+        project = str(uuid.uuid4())
         self.index.create_metric(e1, user, project,
                                  archive_policy_name="low")
         self.index.create_resource('generic', r1, user, project,
@@ -378,8 +385,8 @@ class TestIndexerDriver(tests_base.TestCase):
         r1 = uuid.uuid4()
         e1 = uuid.uuid4()
         e2 = uuid.uuid4()
-        user = uuid.uuid4()
-        project = uuid.uuid4()
+        user = str(uuid.uuid4())
+        project = str(uuid.uuid4())
         self.index.create_metric(e1, user, project,
                                  archive_policy_name="low")
         self.index.create_metric(e2, user, project,
@@ -398,8 +405,8 @@ class TestIndexerDriver(tests_base.TestCase):
         r1 = uuid.uuid4()
         e1 = uuid.uuid4()
         e2 = uuid.uuid4()
-        user = uuid.uuid4()
-        project = uuid.uuid4()
+        user = str(uuid.uuid4())
+        project = str(uuid.uuid4())
         self.index.create_metric(e1, user, project,
                                  archive_policy_name="low")
         self.index.create_metric(e2, user, project,
@@ -416,8 +423,8 @@ class TestIndexerDriver(tests_base.TestCase):
 
     def test_update_resource_attribute(self):
         r1 = uuid.uuid4()
-        user = uuid.uuid4()
-        project = uuid.uuid4()
+        user = str(uuid.uuid4())
+        project = str(uuid.uuid4())
         rc = self.index.create_resource('instance', r1, user, project,
                                         flavor_id="1",
                                         image_ref="http://foo/bar",
@@ -429,8 +436,8 @@ class TestIndexerDriver(tests_base.TestCase):
 
     def test_update_resource_no_change(self):
         r1 = uuid.uuid4()
-        user = uuid.uuid4()
-        project = uuid.uuid4()
+        user = str(uuid.uuid4())
+        project = str(uuid.uuid4())
         rc = self.index.create_resource('instance', r1, user, project,
                                         flavor_id="1",
                                         image_ref="http://foo/bar",
@@ -447,8 +454,8 @@ class TestIndexerDriver(tests_base.TestCase):
 
     def test_update_resource_ended_at_fail(self):
         r1 = uuid.uuid4()
-        user = uuid.uuid4()
-        project = uuid.uuid4()
+        user = str(uuid.uuid4())
+        project = str(uuid.uuid4())
         self.index.create_resource('instance', r1, user, project,
                                    flavor_id="1",
                                    image_ref="http://foo/bar",
@@ -462,7 +469,8 @@ class TestIndexerDriver(tests_base.TestCase):
 
     def test_update_resource_unknown_attribute(self):
         r1 = uuid.uuid4()
-        self.index.create_resource('instance', r1, uuid.uuid4(), uuid.uuid4(),
+        self.index.create_resource('instance', r1, str(uuid.uuid4()),
+                                   str(uuid.uuid4()),
                                    flavor_id="1",
                                    image_ref="http://foo/bar",
                                    host="foo",
@@ -475,7 +483,8 @@ class TestIndexerDriver(tests_base.TestCase):
     def test_update_non_existent_metric(self):
         r1 = uuid.uuid4()
         e1 = uuid.uuid4()
-        self.index.create_resource('generic', r1, uuid.uuid4(), uuid.uuid4())
+        self.index.create_resource('generic', r1, str(uuid.uuid4()),
+                                   str(uuid.uuid4()))
         self.assertRaises(indexer.NoSuchMetric,
                           self.index.update_resource,
                           'generic',
@@ -484,7 +493,7 @@ class TestIndexerDriver(tests_base.TestCase):
     def test_update_non_existent_resource(self):
         r1 = uuid.uuid4()
         e1 = uuid.uuid4()
-        self.index.create_metric(e1, uuid.uuid4(), uuid.uuid4(),
+        self.index.create_metric(e1, str(uuid.uuid4()), str(uuid.uuid4()),
                                  archive_policy_name="low")
         self.assertRaises(indexer.NoSuchResource,
                           self.index.update_resource,
@@ -497,15 +506,15 @@ class TestIndexerDriver(tests_base.TestCase):
         self.assertRaises(indexer.NoSuchMetric,
                           self.index.create_resource,
                           'generic',
-                          r1, uuid.uuid4(), uuid.uuid4(),
+                          r1, str(uuid.uuid4()), str(uuid.uuid4()),
                           metrics={'foo': e1})
 
     def test_delete_metric_on_resource(self):
         r1 = uuid.uuid4()
         e1 = uuid.uuid4()
         e2 = uuid.uuid4()
-        user = uuid.uuid4()
-        project = uuid.uuid4()
+        user = str(uuid.uuid4())
+        project = str(uuid.uuid4())
         self.index.create_metric(e1, user, project,
                                  archive_policy_name="low")
         self.index.create_metric(e2, user, project,
@@ -532,13 +541,15 @@ class TestIndexerDriver(tests_base.TestCase):
                           "created_by_project_id": project,
                           "user_id": None,
                           "project_id": None,
+                          "original_resource_id": None,
                           "type": "generic",
                           "metrics": {'bar': str(e2)}}, r.jsonify())
 
     def test_delete_instance(self):
         r1 = uuid.uuid4()
         created = self.index.create_resource('instance', r1,
-                                             uuid.uuid4(), uuid.uuid4(),
+                                             str(uuid.uuid4()),
+                                             str(uuid.uuid4()),
                                              flavor_id="123",
                                              image_ref="foo",
                                              host="dwq",
@@ -557,8 +568,8 @@ class TestIndexerDriver(tests_base.TestCase):
 
     def test_list_resources_by_user(self):
         r1 = uuid.uuid4()
-        user = uuid.uuid4()
-        project = uuid.uuid4()
+        user = str(uuid.uuid4())
+        project = str(uuid.uuid4())
         g = self.index.create_resource('generic', r1, user, project,
                                        user, project)
         resources = self.index.list_resources(
@@ -568,13 +579,13 @@ class TestIndexerDriver(tests_base.TestCase):
         self.assertEqual(g, resources[0])
         resources = self.index.list_resources(
             'generic',
-            attribute_filter={"=": {"user_id": uuid.uuid4()}})
+            attribute_filter={"=": {"user_id": 'bad-user'}})
         self.assertEqual(0, len(resources))
 
     def test_list_resources_by_created_by_user(self):
         r1 = uuid.uuid4()
-        user = uuid.uuid4()
-        project = uuid.uuid4()
+        user = str(uuid.uuid4())
+        project = str(uuid.uuid4())
         g = self.index.create_resource('generic', r1, user, project)
         resources = self.index.list_resources(
             'generic',
@@ -583,13 +594,13 @@ class TestIndexerDriver(tests_base.TestCase):
         self.assertEqual(g, resources[0])
         resources = self.index.list_resources(
             'generic',
-            attribute_filter={"=": {"created_by_user_id": uuid.uuid4()}})
+            attribute_filter={"=": {"created_by_user_id": 'bad-user'}})
         self.assertEqual(0, len(resources))
 
     def test_list_resources_by_user_with_details(self):
         r1 = uuid.uuid4()
-        user = uuid.uuid4()
-        project = uuid.uuid4()
+        user = str(uuid.uuid4())
+        project = str(uuid.uuid4())
         g = self.index.create_resource('generic', r1, user, project,
                                        user, project)
         r2 = uuid.uuid4()
@@ -611,8 +622,8 @@ class TestIndexerDriver(tests_base.TestCase):
 
     def test_list_resources_by_project(self):
         r1 = uuid.uuid4()
-        user = uuid.uuid4()
-        project = uuid.uuid4()
+        user = str(uuid.uuid4())
+        project = str(uuid.uuid4())
         g = self.index.create_resource('generic', r1, user, project,
                                        user, project)
         resources = self.index.list_resources(
@@ -622,13 +633,13 @@ class TestIndexerDriver(tests_base.TestCase):
         self.assertEqual(g, resources[0])
         resources = self.index.list_resources(
             'generic',
-            attribute_filter={"=": {"project_id": uuid.uuid4()}})
+            attribute_filter={"=": {"project_id": 'bad-project'}})
         self.assertEqual(0, len(resources))
 
     def test_list_resources_by_duration(self):
         r1 = uuid.uuid4()
-        user = uuid.uuid4()
-        project = uuid.uuid4()
+        user = str(uuid.uuid4())
+        project = str(uuid.uuid4())
         g = self.index.create_resource(
             'generic', r1, user, project,
             user_id=user, project_id=project,
@@ -656,10 +667,10 @@ class TestIndexerDriver(tests_base.TestCase):
         # for now it'll be better than nothing.
         r1 = uuid.uuid4()
         g = self.index.create_resource('generic', r1,
-                                       uuid.uuid4(), uuid.uuid4())
+                                       str(uuid.uuid4()), str(uuid.uuid4()))
         r2 = uuid.uuid4()
         i = self.index.create_resource('instance', r2,
-                                       uuid.uuid4(), uuid.uuid4(),
+                                       str(uuid.uuid4()), str(uuid.uuid4()),
                                        flavor_id="123",
                                        image_ref="foo",
                                        host="dwq",
@@ -708,10 +719,10 @@ class TestIndexerDriver(tests_base.TestCase):
     def test_list_resources_without_history(self):
         e = uuid.uuid4()
         rid = uuid.uuid4()
-        user = uuid.uuid4()
-        project = uuid.uuid4()
-        new_user = uuid.uuid4()
-        new_project = uuid.uuid4()
+        user = str(uuid.uuid4())
+        project = str(uuid.uuid4())
+        new_user = str(uuid.uuid4())
+        new_project = str(uuid.uuid4())
 
         self.index.create_metric(e, user, project,
                                  archive_policy_name="low")
@@ -737,10 +748,10 @@ class TestIndexerDriver(tests_base.TestCase):
         e1 = uuid.uuid4()
         e2 = uuid.uuid4()
         rid = uuid.uuid4()
-        user = uuid.uuid4()
-        project = uuid.uuid4()
-        new_user = uuid.uuid4()
-        new_project = uuid.uuid4()
+        user = str(uuid.uuid4())
+        project = str(uuid.uuid4())
+        new_user = str(uuid.uuid4())
+        new_project = str(uuid.uuid4())
 
         self.index.create_metric(e1, user, project,
                                  archive_policy_name="low")
@@ -777,10 +788,10 @@ class TestIndexerDriver(tests_base.TestCase):
         e1 = uuid.uuid4()
         e2 = uuid.uuid4()
         rid = uuid.uuid4()
-        user = uuid.uuid4()
-        project = uuid.uuid4()
-        new_user = uuid.uuid4()
-        new_project = uuid.uuid4()
+        user = str(uuid.uuid4())
+        project = str(uuid.uuid4())
+        new_user = str(uuid.uuid4())
+        new_project = str(uuid.uuid4())
 
         self.index.create_metric(e1, user, project,
                                  archive_policy_name="low")
@@ -824,8 +835,8 @@ class TestIndexerDriver(tests_base.TestCase):
         # database for all tests and the tests are running concurrently, but
         # for now it'll be better than nothing.
         r1 = uuid.uuid4()
-        user = uuid.uuid4()
-        project = uuid.uuid4()
+        user = str(uuid.uuid4())
+        project = str(uuid.uuid4())
         g = self.index.create_resource(
             'generic', r1, user, project,
             started_at=utils.datetime_utc(2000, 1, 1, 23, 23, 23),
@@ -887,13 +898,13 @@ class TestIndexerDriver(tests_base.TestCase):
 
     def test_get_metric(self):
         e1 = uuid.uuid4()
-        user = uuid.uuid4()
-        project = uuid.uuid4()
+        user = str(uuid.uuid4())
+        project = str(uuid.uuid4())
         self.index.create_metric(e1,
                                  user, project,
                                  archive_policy_name="low")
 
-        metric = self.index.get_metrics([e1])
+        metric = self.index.list_metrics(id=e1)
         self.assertEqual(1, len(metric))
         metric = metric[0]
         self.assertEqual(e1, metric.id)
@@ -904,13 +915,13 @@ class TestIndexerDriver(tests_base.TestCase):
 
     def test_get_metric_with_details(self):
         e1 = uuid.uuid4()
-        user = uuid.uuid4()
-        project = uuid.uuid4()
+        user = str(uuid.uuid4())
+        project = str(uuid.uuid4())
         self.index.create_metric(e1,
                                  user, project,
                                  archive_policy_name="low")
 
-        metric = self.index.get_metrics([e1])
+        metric = self.index.list_metrics(id=e1)
         self.assertEqual(1, len(metric))
         metric = metric[0]
         self.assertEqual(e1, metric.id)
@@ -922,18 +933,15 @@ class TestIndexerDriver(tests_base.TestCase):
 
     def test_get_metric_with_bad_uuid(self):
         e1 = uuid.uuid4()
-        self.assertEqual([], self.index.get_metrics([e1]))
+        self.assertEqual([], self.index.list_metrics(id=e1))
 
     def test_get_metric_empty_list_uuids(self):
-        self.assertEqual([], self.index.get_metrics([]))
-
-    def test_get_metric_no_args(self):
-        self.assertRaises(TypeError, self.index.get_metrics, *[])
+        self.assertEqual([], self.index.list_metrics(ids=[]))
 
     def test_list_metrics(self):
         e1 = uuid.uuid4()
-        user = uuid.uuid4()
-        project = uuid.uuid4()
+        user = str(uuid.uuid4())
+        project = str(uuid.uuid4())
         self.index.create_metric(e1,
                                  user, project,
                                  archive_policy_name="low")
@@ -942,8 +950,8 @@ class TestIndexerDriver(tests_base.TestCase):
 
     def test_list_metrics_delete_status(self):
         e1 = uuid.uuid4()
-        user = uuid.uuid4()
-        project = uuid.uuid4()
+        user = str(uuid.uuid4())
+        project = str(uuid.uuid4())
         self.index.create_metric(e1,
                                  user, project,
                                  archive_policy_name="low")

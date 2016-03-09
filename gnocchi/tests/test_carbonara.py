@@ -16,11 +16,9 @@
 # License for the specific language governing permissions and limitations
 # under the License.
 import datetime
-import os
-import subprocess
-import tempfile
+import math
 
-import fixtures
+from oslo_utils import timeutils
 from oslotest import base
 # TODO(jd) We shouldn't use pandas here
 import pandas
@@ -99,11 +97,47 @@ class TestBoundTimeSerie(base.BaseTestCase):
 class TestAggregatedTimeSerie(base.BaseTestCase):
     @staticmethod
     def test_base():
-        carbonara.AggregatedTimeSerie(
+        carbonara.AggregatedTimeSerie.from_data(
+            3,
             [datetime.datetime(2014, 1, 1, 12, 0, 0),
              datetime.datetime(2014, 1, 1, 12, 0, 4),
              datetime.datetime(2014, 1, 1, 12, 0, 9)],
             [3, 5, 6])
+        carbonara.AggregatedTimeSerie.from_data(
+            "4s",
+            [datetime.datetime(2014, 1, 1, 12, 0, 0),
+             datetime.datetime(2014, 1, 1, 12, 0, 4),
+             datetime.datetime(2014, 1, 1, 12, 0, 9)],
+            [3, 5, 6])
+
+    def test_fetch_basic(self):
+        ts = carbonara.AggregatedTimeSerie.from_data(
+            timestamps=[datetime.datetime(2014, 1, 1, 12, 0, 0),
+                        datetime.datetime(2014, 1, 1, 12, 0, 4),
+                        datetime.datetime(2014, 1, 1, 12, 0, 9)],
+            values=[3, 5, 6],
+            sampling="1s")
+        self.assertEqual(
+            [(datetime.datetime(2014, 1, 1, 12), 1, 3),
+             (datetime.datetime(2014, 1, 1, 12, 0, 4), 1, 5),
+             (datetime.datetime(2014, 1, 1, 12, 0, 9), 1, 6)],
+            ts.fetch())
+        self.assertEqual(
+            [(datetime.datetime(2014, 1, 1, 12, 0, 4), 1, 5),
+             (datetime.datetime(2014, 1, 1, 12, 0, 9), 1, 6)],
+            ts.fetch(from_timestamp=datetime.datetime(2014, 1, 1, 12, 0, 4)))
+        self.assertEqual(
+            [(datetime.datetime(2014, 1, 1, 12, 0, 4), 1, 5),
+             (datetime.datetime(2014, 1, 1, 12, 0, 9), 1, 6)],
+            ts.fetch(
+                from_timestamp=timeutils.parse_isotime(
+                    "2014-01-01 12:00:04")))
+        self.assertEqual(
+            [(datetime.datetime(2014, 1, 1, 12, 0, 4), 1, 5),
+             (datetime.datetime(2014, 1, 1, 12, 0, 9), 1, 6)],
+            ts.fetch(
+                from_timestamp=timeutils.parse_isotime(
+                    "2014-01-01 13:00:04+01:00")))
 
     def test_bad_percentile(self):
         for bad_percentile in ('0pct', '100pct', '-1pct', '123pct'):
@@ -148,16 +182,16 @@ class TestAggregatedTimeSerie(base.BaseTestCase):
 
     def test_different_length_in_timestamps_and_data(self):
         self.assertRaises(ValueError,
-                          carbonara.AggregatedTimeSerie,
+                          carbonara.AggregatedTimeSerie.from_data,
+                          3,
                           [datetime.datetime(2014, 1, 1, 12, 0, 0),
                            datetime.datetime(2014, 1, 1, 12, 0, 4),
                            datetime.datetime(2014, 1, 1, 12, 0, 9)],
                           [3, 5])
 
     def test_max_size(self):
-        ts = carbonara.AggregatedTimeSerie(
-            max_size=2)
-        ts.update(carbonara.TimeSerie(
+        ts = carbonara.AggregatedTimeSerie(sampling=1, max_size=2)
+        ts.update(carbonara.TimeSerie.from_data(
             [datetime.datetime(2014, 1, 1, 12, 0, 0),
              datetime.datetime(2014, 1, 1, 12, 0, 4),
              datetime.datetime(2014, 1, 1, 12, 0, 9)],
@@ -891,77 +925,88 @@ class TestTimeSerieArchive(base.BaseTestCase):
                           carbonara.TimeSerieArchive.aggregated,
                           [tsc1, tsc2], from_timestamp=dtfrom)
 
+        # Retry with 50% and it works
+        output = carbonara.AggregatedTimeSerie.aggregated(
+            [tsc1, tsc2], from_timestamp=dtfrom,
+            aggregation="sum",
+            needed_percent_of_overlap=50.0)
+        self.assertEqual([
+            (pandas.Timestamp('2015-12-03 13:19:15'), 1.0, 1.0),
+            (pandas.Timestamp('2015-12-03 13:20:15'), 1.0, 1.0),
+            (pandas.Timestamp('2015-12-03 13:21:15'), 1.0, 11.0),
+            (pandas.Timestamp('2015-12-03 13:22:15'), 1.0, 11.0),
+        ], output)
 
-class CarbonaraCmd(base.BaseTestCase):
+        output = carbonara.AggregatedTimeSerie.aggregated(
+            [tsc1, tsc2], to_timestamp=dtto,
+            aggregation="sum",
+            needed_percent_of_overlap=50.0)
+        self.assertEqual([
+            (pandas.Timestamp('2015-12-03 13:21:15'), 1.0, 11.0),
+            (pandas.Timestamp('2015-12-03 13:22:15'), 1.0, 11.0),
+            (pandas.Timestamp('2015-12-03 13:23:15'), 1.0, 10.0),
+            (pandas.Timestamp('2015-12-03 13:24:15'), 1.0, 10.0),
+        ], output)
 
-    def setUp(self):
-        super(CarbonaraCmd, self).setUp()
-        self.useFixture(fixtures.NestedTempfile())
+    def test_split_key(self):
+        self.assertEqual(
+            "1420128000.0",
+            carbonara.AggregatedTimeSerie.get_split_key(
+                datetime.datetime(2015, 1, 1, 23, 34), 5))
+        self.assertEqual(
+            "1420056000.0",
+            carbonara.AggregatedTimeSerie.get_split_key(
+                datetime.datetime(2015, 1, 1, 15, 3), 5))
 
-    def test_create(self):
-        filename = tempfile.mktemp()
-        subp = subprocess.Popen(['carbonara-create',
-                                 '1,2',
-                                 filename],
-                                stdout=subprocess.PIPE,
-                                stderr=subprocess.PIPE)
-        out, err = subp.communicate()
-        subp.wait()
-        os.stat(filename)
-        self.assertEqual(0, subp.returncode)
-        self.assertEqual(b"", out)
+    def test_split_key_datetime(self):
+        self.assertEqual(
+            datetime.datetime(2014, 5, 10),
+            carbonara.AggregatedTimeSerie.get_split_key_datetime(
+                datetime.datetime(2015, 1, 1, 15, 3), 3600))
+        self.assertEqual(
+            datetime.datetime(2014, 12, 29, 8),
+            carbonara.AggregatedTimeSerie.get_split_key_datetime(
+                datetime.datetime(2015, 1, 1, 15, 3), 58))
 
-    def test_dump(self):
-        filename = tempfile.mktemp()
-        subp = subprocess.Popen(['carbonara-create',
-                                 '1,2',
-                                 filename])
-        subp.wait()
-        subp = subprocess.Popen(['carbonara-dump',
-                                 filename],
-                                stdout=subprocess.PIPE,
-                                stderr=subprocess.PIPE)
-        out, err = subp.communicate()
-        subp.wait()
-        self.assertIn(b"Aggregation method", out)
+    def test_split(self):
+        sampling = 5
+        points = 100000
+        ts = carbonara.TimeSerie.from_data(
+            timestamps=map(datetime.datetime.utcfromtimestamp,
+                           six.moves.range(points)),
+            values=six.moves.range(points))
+        agg = carbonara.AggregatedTimeSerie(sampling=sampling)
+        agg.update(ts)
 
-    def test_update(self):
-        filename = tempfile.mktemp()
-        subp = subprocess.Popen(['carbonara-create',
-                                 '2,2',
-                                 filename])
-        subp.wait()
-        self.assertEqual(0, subp.returncode)
+        grouped_points = list(agg.split())
 
-        subp = subprocess.Popen(['carbonara-update',
-                                 '2014-12-23 23:23:23,1',
-                                 '2014-12-23 23:23:24,10',
-                                 filename])
-        subp.wait()
-        self.assertEqual(0, subp.returncode)
+        self.assertEqual(
+            math.ceil((points / float(sampling))
+                      / carbonara.AggregatedTimeSerie.POINTS_PER_SPLIT),
+            len(grouped_points))
+        self.assertEqual("0.0",
+                         grouped_points[0][0])
+        # 14400 × 5s = 20 hours
+        self.assertEqual("72000.0",
+                         grouped_points[1][0])
+        self.assertEqual(carbonara.AggregatedTimeSerie.POINTS_PER_SPLIT,
+                         len(grouped_points[0][1]))
 
-        subp = subprocess.Popen(['carbonara-update',
-                                 '2014-12-23 23:23:25,7',
-                                 filename])
-        subp.wait()
-        self.assertEqual(0, subp.returncode)
+    def test_from_timeseries(self):
+        sampling = 5
+        points = 100000
+        ts = carbonara.TimeSerie.from_data(
+            timestamps=map(datetime.datetime.utcfromtimestamp,
+                           six.moves.range(points)),
+            values=six.moves.range(points))
+        agg = carbonara.AggregatedTimeSerie(sampling=sampling)
+        agg.update(ts)
 
-        subp = subprocess.Popen(['carbonara-dump',
-                                 filename],
-                                stdout=subprocess.PIPE,
-                                stderr=subprocess.PIPE)
-        out, err = subp.communicate()
-        subp.wait()
-        self.assertEqual(0, subp.returncode)
-        self.assertEqual(u"""Aggregation method: mean
-Number of aggregated timeseries: 1
+        split = [t[1] for t in list(agg.split())]
 
-Aggregated timeserie #1: 2s × 2 = 0:00:04
-Number of measures: 2
-+---------------------+-------+
-|      Timestamp      | Value |
-+---------------------+-------+
-| 2014-12-23 23:23:22 |  1.0  |
-| 2014-12-23 23:23:24 |  7.0  |
-+---------------------+-------+
-""", out.decode('utf-8'))
+        self.assertEqual(agg,
+                         carbonara.AggregatedTimeSerie.from_timeseries(
+                             split,
+                             sampling=agg.sampling,
+                             max_size=agg.max_size,
+                             aggregation_method=agg.aggregation_method))

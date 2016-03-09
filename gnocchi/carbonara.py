@@ -1,5 +1,6 @@
 # -*- encoding: utf-8 -*-
 #
+# Copyright © 2016 Red Hat, Inc.
 # Copyright © 2014-2015 eNovance
 #
 # Authors: Julien Danjou <julien@danjou.info>
@@ -17,11 +18,14 @@
 # under the License.
 """Time series data manipulation, better with pancetta."""
 
+import datetime
 import functools
 import logging
 import operator
 import re
 
+import iso8601
+import lz4
 import msgpack
 import pandas
 import six
@@ -64,15 +68,8 @@ class SerializableMixin(object):
     def unserialize(cls, data):
         return cls.from_dict(msgpack.loads(data, encoding='utf-8'))
 
-    @classmethod
-    def unserialize_from_file(cls, stream):
-        return cls.from_dict(msgpack.unpack(stream, encoding='utf-8'))
-
     def serialize(self):
         return msgpack.dumps(self.to_dict())
-
-    def serialize_to_file(self, stream):
-        return msgpack.pack(self.to_dict(), stream)
 
 
 class TimeSerie(SerializableMixin):
@@ -82,9 +79,22 @@ class TimeSerie(SerializableMixin):
     last in the group when the TimeSerie is created or extended.
     """
 
-    def __init__(self, timestamps=None, values=None):
-        self.ts = pandas.Series(values, timestamps).groupby(
-            level=0).last().sort_index()
+    def __init__(self, ts=None):
+        if ts is None:
+            ts = pandas.Series()
+        self.ts = self.clean_ts(ts)
+
+    @staticmethod
+    def clean_ts(ts):
+        if ts.index.has_duplicates:
+            ts = ts[~ts.index.duplicated(keep='last')]
+        if not ts.index.is_monotonic:
+            ts = ts.sort_index()
+        return ts
+
+    @classmethod
+    def from_data(cls, timestamps=None, values=None):
+        return cls(pandas.Series(values, timestamps))
 
     @classmethod
     def from_tuples(cls, timestamps_values):
@@ -98,9 +108,8 @@ class TimeSerie(SerializableMixin):
         return self.ts[key]
 
     def set_values(self, values):
-        t = pandas.Series(*reversed(list(zip(*values)))).groupby(
-            level=0).last()
-        self.ts = t.combine_first(self.ts).sort_index()
+        t = pandas.Series(*reversed(list(zip(*values))))
+        self.ts = self.clean_ts(t).combine_first(self.ts)
 
     def __len__(self):
         return len(self.ts)
@@ -142,6 +151,20 @@ class TimeSerie(SerializableMixin):
     def _round_timestamp(ts, freq):
         return pandas.Timestamp(
             (ts.value // freq.delta.value) * freq.delta.value)
+
+    @property
+    def first(self):
+        try:
+            return self.ts.index[0]
+        except IndexError:
+            return
+
+    @property
+    def last(self):
+        try:
+            return self.ts.index[-1]
+        except IndexError:
+            return
 
 
 class BoundTimeSerie(TimeSerie):
@@ -239,9 +262,10 @@ class AggregatedTimeSerie(TimeSerie):
 
     _AGG_METHOD_PCT_RE = re.compile(r"([1-9][0-9]?)pct")
 
-    def __init__(self, timestamps=None, values=None,
-                 max_size=None,
-                 sampling=None, aggregation_method='mean'):
+    POINTS_PER_SPLIT = 14400
+
+    def __init__(self, sampling, ts=None, max_size=None,
+                 aggregation_method='mean'):
         """A time serie that is downsampled.
 
         Used to represent the downsampled timeserie for a single
@@ -261,9 +285,54 @@ class AggregatedTimeSerie(TimeSerie):
                 raise UnknownAggregationMethod(aggregation_method)
             self.aggregation_method_func_name = aggregation_method
 
-        self.sampling = pandas.tseries.frequencies.to_offset(sampling)
+        self.sampling = self._to_offset(sampling).nanos / 10e8
         self.max_size = max_size
         self.aggregation_method = aggregation_method
+
+    @classmethod
+    def from_data(cls, sampling, timestamps=None, values=None,
+                  max_size=None, aggregation_method='mean'):
+        return cls(ts=pandas.Series(values, timestamps),
+                   max_size=max_size, sampling=sampling,
+                   aggregation_method=aggregation_method)
+
+    @classmethod
+    def get_split_key_datetime(cls, timestamp, sampling):
+        return cls._round_timestamp(
+            timestamp, freq=sampling * cls.POINTS_PER_SPLIT * 10e8)
+
+    @staticmethod
+    def _split_key_to_string(timestamp):
+        ts = timestamp.to_datetime()
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=iso8601.iso8601.UTC)
+        return str(utils.datetime_to_unix(ts))
+
+    @classmethod
+    def get_split_key(cls, timestamp, sampling):
+        return cls._split_key_to_string(
+            cls.get_split_key_datetime(timestamp, sampling))
+
+    def split(self):
+        groupby = self.ts.groupby(functools.partial(
+            self.get_split_key_datetime, sampling=self.sampling))
+        keys = sorted(groupby.groups.keys())
+        for i, ts in enumerate(keys):
+            if i + 1 == len(keys):
+                yield self._split_key_to_string(ts), TimeSerie(self.ts[ts:])
+            elif i + 1 < len(keys):
+                t = self.ts[ts:keys[i + 1]]
+                del t[t.index[-1]]
+                yield self._split_key_to_string(ts), TimeSerie(t)
+
+    @classmethod
+    def from_timeseries(cls, timeseries, sampling, max_size=None,
+                        aggregation_method='mean'):
+        ts = pandas.Series()
+        for t in timeseries:
+            ts = ts.combine_first(t.ts)
+        return cls(ts=ts, sampling=sampling, max_size=max_size,
+                   aggregation_method=aggregation_method)
 
     def __eq__(self, other):
         return (isinstance(other, AggregatedTimeSerie)
@@ -281,20 +350,63 @@ class AggregatedTimeSerie(TimeSerie):
         :param d: The dict.
         :returns: A TimeSerie object
         """
-        timestamps, values = cls._timestamps_and_values_from_dict(d['values'])
-        return cls(timestamps, values,
-                   max_size=d.get('max_size'),
-                   sampling=d.get('sampling'),
-                   aggregation_method=d.get('aggregation_method', 'mean'))
+        sampling = d.get('sampling')
+        if 'first_timestamp' in d:
+            prev_timestamp = pandas.Timestamp(d.get('first_timestamp') * 10e8)
+            timestamps = []
+            for delta in d.get('timestamps'):
+                prev_timestamp = datetime.timedelta(
+                    seconds=delta * sampling) + prev_timestamp
+                timestamps.append(prev_timestamp)
+        else:
+            # migrate from v1.3, remove with TimeSerieArchive
+            timestamps, d['values'] = (
+                cls._timestamps_and_values_from_dict(d['values']))
+
+        return cls.from_data(
+            timestamps=timestamps,
+            values=d.get('values'),
+            max_size=d.get('max_size'),
+            sampling=sampling,
+            aggregation_method=d.get('aggregation_method', 'mean'))
 
     def to_dict(self):
-        d = super(AggregatedTimeSerie, self).to_dict()
-        d.update({
+        if self.ts.empty:
+            timestamps = []
+            values = []
+            first_timestamp = 0
+        else:
+            first_timestamp = float(
+                self.get_split_key(self.ts.index[0], self.sampling))
+            timestamps = []
+            prev_timestamp = pandas.Timestamp(
+                first_timestamp * 10e8).to_pydatetime()
+            # Use double delta encoding for timestamps
+            for i in self.ts.index:
+                # Convert to pydatetime because it's faster to compute than
+                # Pandas' objects
+                asdt = i.to_pydatetime()
+                timestamps.append(
+                    int((asdt - prev_timestamp).total_seconds()
+                        / self.sampling))
+                prev_timestamp = asdt
+            values = self.ts.values.tolist()
+
+        return {
+            'first_timestamp': first_timestamp,
             'aggregation_method': self.aggregation_method,
             'max_size': self.max_size,
-            'sampling': self._serialize_time_period(self.sampling),
-        })
-        return d
+            'sampling': self.sampling,
+            'timestamps': timestamps,
+            'values': values,
+        }
+
+    @classmethod
+    def unserialize(cls, data):
+        return cls.from_dict(msgpack.loads(lz4.loads(data), encoding='utf-8'))
+
+    def serialize(self):
+        return lz4.dumps(msgpack.dumps(self.to_dict()))
 
     def _truncate(self):
         """Truncate the timeserie."""
@@ -303,31 +415,30 @@ class AggregatedTimeSerie(TimeSerie):
             self.ts = self.ts.dropna()[-self.max_size:]
 
     def _resample(self, after):
-        if self.sampling:
-            # Group by the sampling, and then apply the aggregation method on
-            # the points after `after'
-            groupedby = self.ts[after:].groupby(
-                functools.partial(self._round_timestamp,
-                                  freq=self.sampling))
-            agg_func = getattr(groupedby, self.aggregation_method_func_name)
-            if self.aggregation_method_func_name == 'quantile':
-                aggregated = agg_func(self.q)
-            else:
-                aggregated = agg_func()
-            # Now combine the result with the rest of the point – everything
-            # that is before `after'
-            self.ts = aggregated.combine_first(self.ts[:after][:-1])
+        # Group by the sampling, and then apply the aggregation method on
+        # the points after `after'
+        groupedby = self.ts[after:].groupby(
+            functools.partial(self._round_timestamp,
+                              freq=self.sampling * 10e8))
+        agg_func = getattr(groupedby, self.aggregation_method_func_name)
+        if self.aggregation_method_func_name == 'quantile':
+            aggregated = agg_func(self.q)
+        else:
+            aggregated = agg_func()
+        # Now combine the result with the rest of the point – everything
+        # that is before `after'
+        self.ts = aggregated.combine_first(self.ts[:after][:-1])
 
     def update(self, ts):
         if ts.ts.empty:
             return
+        ts.ts = self.clean_ts(ts.ts)
         index = ts.ts.index
         first_timestamp = index[0]
         last_timestamp = index[-1]
         # Build a new time serie excluding all data points in the range of the
         # timeserie passed as argument
-        new_ts = self.ts[:first_timestamp].combine_first(
-            self.ts[last_timestamp:])
+        new_ts = self.ts.drop(self.ts[first_timestamp:last_timestamp].index)
 
         # Build a new timeserie where we replaced the timestamp range covered
         # by the timeserie passed as argument
@@ -564,54 +675,6 @@ def dump_archive_file():
 
     print("Number of aggregated timeseries: %d" % len(ts.agg_timeseries))
 
-    for idx, agg_ts in enumerate(ts.agg_timeseries):
-        sampling = agg_ts.sampling.nanos / 1000000000
-        timespan = datetime.timedelta(seconds=sampling * agg_ts.max_size)
-        print("\nAggregated timeserie #%d: %ds × %d = %s"
-              % (idx + 1, sampling, agg_ts.max_size, timespan))
-        print("Number of measures: %d" % len(agg_ts))
-        table = prettytable.PrettyTable(("Timestamp", "Value"))
-        for k, v in agg_ts.ts.iteritems():
-            table.add_row((k, v))
-        print(table.get_string())
-
-
-def _timestamp_value(value):
-    result = value.split(",")
-    if len(result) != 2:
-        raise ValueError("Format is: timestamp,value")
-    try:
-        timestamp = float(result[0])
-    except (ValueError, TypeError):
-        timestamp = timeutils.normalize_time(
-            timeutils.parse_isotime(result[0]))
-    else:
-        timestamp = datetime.datetime.utcfromtimestamp(timestamp)
-
-    return timestamp, float(result[1])
-
-
-def update_archive_file():
-    parser = argparse.ArgumentParser(
-        description="Insert values in a Carbonara file",
-    )
-    parser.add_argument("timestamp,value",
-                        nargs='+',
-                        type=_timestamp_value,
-                        help="Timestamp and value to set")
-    parser.add_argument("filename",
-                        nargs=1,
-                        type=argparse.FileType(mode="rb+"),
-                        help="File name to update")
-    args = parser.parse_args()
-
-    ts = TimeSerieArchive.unserialize_from_file(args.filename[0])
-
-    try:
-        ts.update(TimeSerie.from_tuples(getattr(args, 'timestamp,value')))
-    except Exception as e:
-        print("E: %s: %s" % (e.__class__.__name__, e))
-        return 1
-
-    args.filename[0].seek(0)
-    ts.serialize_to_file(args.filename[0])
+    @classmethod
+    def from_dict(cls, d):
+        return cls([AggregatedTimeSerie.from_dict(a) for a in d['archives']])

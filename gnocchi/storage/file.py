@@ -115,8 +115,19 @@ class FileStorage(_carbonara.CarbonaraBasedStorage):
                     if e.errno != errno.EEXIST:
                         raise
 
-    def _list_metric_with_measures_to_process(self):
-        return os.listdir(self.measure_path)
+    def _build_report(self, details):
+        metric_details = {}
+        for metric in os.listdir(self.measure_path):
+            metric_details[metric] = (
+                self._pending_measures_to_process_count(metric))
+        return (len(metric_details.keys()), sum(metric_details.values()),
+                metric_details if details else None)
+
+    def _list_metric_with_measures_to_process(self, block_size, full=False):
+        if full:
+            return os.listdir(self.measure_path)
+        return os.listdir(self.measure_path)[
+            block_size * self.partition:block_size * (self.partition + 1)]
 
     def _list_measures_container_for_metric_id(self, metric_id):
         try:
@@ -165,11 +176,46 @@ class FileStorage(_carbonara.CarbonaraBasedStorage):
 
         self._delete_measures_files_for_metric_id(metric.id, files)
 
-    def _store_metric_measures(self, metric, aggregation, data):
-        tmpfile = self._get_tempfile()
-        tmpfile.write(data)
-        tmpfile.close()
-        os.rename(tmpfile.name, self._build_metric_path(metric, aggregation))
+    def _store_unaggregated_timeserie(self, metric, data):
+        self._atomic_file_store(
+            self._build_unaggregated_timeserie_path(metric),
+            data)
+
+    def _get_unaggregated_timeserie(self, metric):
+        path = self._build_unaggregated_timeserie_path(metric)
+        try:
+            with open(path, 'rb') as f:
+                return f.read()
+        except IOError as e:
+            if e.errno == errno.ENOENT:
+                raise storage.MetricDoesNotExist(metric)
+            raise
+
+    def _list_split_keys_for_metric(self, metric, aggregation, granularity):
+        try:
+            files = os.listdir(self._build_metric_path(metric, aggregation))
+        except OSError as e:
+            if e.errno == errno.ENOENT:
+                raise storage.MetricDoesNotExist(metric)
+            raise
+        keys = []
+        for f in files:
+            key, sep, file_granularity = f.partition("_")
+            if file_granularity == str(granularity):
+                keys.append(key)
+        return keys
+
+    def _delete_metric_measures(self, metric, timestamp_key, aggregation,
+                                granularity):
+        os.unlink(self._build_metric_path_for_split(
+            metric, aggregation, timestamp_key, granularity))
+
+    def _store_metric_measures(self, metric, timestamp_key, aggregation,
+                               granularity, data):
+        self._atomic_file_store(
+            self._build_metric_path_for_split(metric, aggregation,
+                                              timestamp_key, granularity),
+            data)
 
     def _delete_metric(self, metric):
         path = self._build_metric_path(metric)

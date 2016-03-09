@@ -124,29 +124,16 @@ class SQLAlchemyIndexer(indexer.IndexerDriver):
         return ap
 
     def delete_archive_policy(self, name):
-        session = self.engine_facade.get_session()
-        try:
-            if session.query(ArchivePolicy).filter(
-                    ArchivePolicy.name == name).delete() == 0:
-                raise indexer.NoSuchArchivePolicy(name)
-        except exception.DBReferenceError as e:
-            if (e.constraint ==
-               'fk_metric_archive_policy_name_archive_policy_name'):
-                raise indexer.ArchivePolicyInUse(name)
-            raise
-
-    def get_metrics(self, uuids, active_only=True):
-        if not uuids:
-            return []
-        session = self.engine_facade.get_session()
-        query = session.query(Metric).filter(Metric.id.in_(uuids)).options(
-            sqlalchemy.orm.joinedload('resource'))
-        if active_only:
-            query = query.filter(Metric.status == 'active')
-
-        metrics = list(query.all())
-        session.expunge_all()
-        return metrics
+        with self.facade.writer() as session:
+            try:
+                if session.query(ArchivePolicy).filter(
+                        ArchivePolicy.name == name).delete() == 0:
+                    raise indexer.NoSuchArchivePolicy(name)
+            except exception.DBReferenceError as e:
+                if (e.constraint ==
+                   'fk_metric_archive_policy_name_archive_policy_name'):
+                    raise indexer.ArchivePolicyInUse(name)
+                raise
 
     def create_archive_policy(self, archive_policy):
         ap = ArchivePolicy(
@@ -220,22 +207,23 @@ class SQLAlchemyIndexer(indexer.IndexerDriver):
         session.expunge_all()
         return m
 
-    def list_metrics(self, user_id=None, project_id=None, details=False,
+    def list_metrics(self, names=None, ids=None, details=False,
                      status='active', **kwargs):
-        session = self.engine_facade.get_session()
-        q = session.query(Metric).filter(Metric.status == status)
-        if user_id is not None:
-            q = q.filter(Metric.created_by_user_id == user_id)
-        if project_id is not None:
-            q = q.filter(Metric.created_by_project_id == project_id)
-        for attr in kwargs:
-            q = q.filter(getattr(Metric, attr) == kwargs[attr])
-        if details:
-            q = q.options(sqlalchemy.orm.joinedload('resource'))
+        if ids == []:
+            return []
+        with self.facade.independent_reader() as session:
+            q = session.query(Metric).filter(
+                Metric.status == status).order_by(Metric.id)
+            if names is not None:
+                q = q.filter(Metric.name.in_(names))
+            if ids is not None:
+                q = q.filter(Metric.id.in_(ids))
+            for attr in kwargs:
+                q = q.filter(getattr(Metric, attr) == kwargs[attr])
+            if details:
+                q = q.options(sqlalchemy.orm.joinedload('resource'))
 
-        metrics = list(q.all())
-        session.expunge_all()
-        return metrics
+            return list(q.all())
 
     def create_resource(self, resource_type, id,
                         created_by_user_id, created_by_project_id,
@@ -472,64 +460,29 @@ class SQLAlchemyIndexer(indexer.IndexerDriver):
         if attribute_filter:
             engine = self.engine_facade.get_engine()
             try:
-                f = QueryTransformer.build_filter(engine.dialect.name,
-                                                  target_cls,
-                                                  attribute_filter)
-            except indexer.QueryAttributeError as e:
-                # NOTE(jd) The QueryAttributeError does not know about
-                # resource_type, so convert it
-                raise indexer.ResourceAttributeError(resource_type,
-                                                     e.attribute)
+                q = oslo_db_utils.paginate_query(q, target_cls, limit=limit,
+                                                 sort_keys=sort_keys,
+                                                 marker=resource_marker,
+                                                 sort_dirs=sort_dirs)
+            except ValueError as e:
+                raise indexer.InvalidPagination(e)
+            except exception.InvalidSortKey as e:
+                # FIXME(jd) Wait for https://review.openstack.org/274868 to be
+                # released so we can return which key
+                raise indexer.InvalidPagination("Invalid sort keys")
 
-            q = q.filter(f)
+            # Always include metrics
+            q = q.options(sqlalchemy.orm.joinedload("metrics"))
+            all_resources = q.all()
 
-        # transform the api-wg representation to the oslo.db one
-        sort_keys = []
-        sort_dirs = []
-        for sort in sorts:
-            sort_key, __, sort_dir = sort.partition(":")
-            sort_keys.append(sort_key.strip())
-            sort_dirs.append(sort_dir or 'asc')
-
-        # paginate_query require at list one uniq column
-        if 'id' not in sort_keys:
-            sort_keys.append('id')
-            sort_dirs.append('asc')
-
-        if marker:
-            resource_marker = self.get_resource(resource_type, marker)
-            if resource_marker is None:
-                raise indexer.InvalidPagination(
-                    "Invalid marker: `%s'" % marker)
-        else:
-            resource_marker = None
-
-        try:
-            q = oslo_db_utils.paginate_query(q, target_cls, limit=limit,
-                                             sort_keys=sort_keys,
-                                             marker=resource_marker,
-                                             sort_dirs=sort_dirs)
-        except (exception.InvalidSortKey, ValueError) as e:
-            raise indexer.InvalidPagination(e)
-
-        # Always include metrics
-        q = q.options(sqlalchemy.orm.joinedload("metrics"))
-        all_resources = q.all()
-
-        if details:
-            grouped_by_type = itertools.groupby(
-                all_resources, lambda r: (r.revision != -1, r.type))
-            all_resources = []
-            for (is_history, type), resources in grouped_by_type:
-                if type == 'generic':
-                    # No need for a second query
-                    all_resources.extend(resources)
-                else:
-                    if is_history:
-                        target_cls = self._resource_type_to_class(type,
-                                                                  "history")
-                        f = target_cls.revision.in_(
-                            [r.revision for r in resources])
+            if details:
+                grouped_by_type = itertools.groupby(
+                    all_resources, lambda r: (r.revision != -1, r.type))
+                all_resources = []
+                for (is_history, type), resources in grouped_by_type:
+                    if type == 'generic':
+                        # No need for a second query
+                        all_resources.extend(resources)
                     else:
                         target_cls = self._resource_type_to_class(type)
                         f = target_cls.id.in_([r.id for r in resources])

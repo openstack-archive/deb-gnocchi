@@ -1,6 +1,6 @@
-=======
-Gnocchi
-=======
+===============================
+ Gnocchi - Metric as a Service
+===============================
 
 Gnocchi is a service for managing a set of resources and storing metrics about
 them, in a scalable and resilient way. Its functionalities are exposed over an

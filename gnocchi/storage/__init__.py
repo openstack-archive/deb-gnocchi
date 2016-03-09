@@ -71,7 +71,7 @@ class Metric(object):
         return str(self.id)
 
     def __eq__(self, other):
-        return (isinstance(self, Metric)
+        return (isinstance(other, Metric)
                 and self.id == other.id
                 and self.archive_policy == other.archive_policy
                 and self.created_by_user_id == other.created_by_user_id
@@ -123,7 +123,7 @@ class MetricUnaggregatable(Exception):
         self.reason = reason
         super(MetricUnaggregatable, self).__init__(
             "Metrics %s can't be aggregated: %s"
-            % (" ,".join((str(m.id) for m in metrics)), reason))
+            % (", ".join((str(m.id) for m in metrics)), reason))
 
 
 def get_driver_class(conf):
@@ -149,20 +149,25 @@ class StorageDriver(object):
     def stop():
         pass
 
-    def process_background_tasks(self, index, sync=False):
+    @staticmethod
+    def upgrade(index):
+        pass
+
+    def process_background_tasks(self, index, block_size=128, sync=False):
         """Process background tasks for this storage.
 
         This calls :func:`process_measures` to process new measures and
         :func:`expunge_metrics` to expunge deleted metrics.
 
         :param index: An indexer to be used for querying metrics
+        :param block_size: number of metrics to process
         :param sync: If True, then process everything synchronously and raise
                      on error
         :type sync: bool
         """
         LOG.debug("Processing new and to delete measures")
         try:
-            self.process_measures(index, sync)
+            self.process_measures(index, block_size, sync)
         except Exception:
             if sync:
                 raise
@@ -170,19 +175,21 @@ class StorageDriver(object):
                       exc_info=True)
         LOG.debug("Expunging deleted metrics")
         try:
-            self.expunge_metrics(index)
+            self.expunge_metrics(index, sync)
         except Exception:
             if sync:
                 raise
             LOG.error("Unexpected error during deleting metrics",
                       exc_info=True)
 
-    def expunge_metrics(self, index):
+    def expunge_metrics(self, index, sync=False):
         metrics_to_expunge = index.list_metrics(status='delete')
         for m in metrics_to_expunge:
             try:
-                self.delete_metric(m)
+                self.delete_metric(m, sync)
             except Exception:
+                if sync:
+                    raise
                 LOG.error("Unable to expunge metric %s from storage" % m,
                           exc_info=True)
                 continue
@@ -203,7 +210,7 @@ class StorageDriver(object):
         raise exceptions.NotImplementedError
 
     @staticmethod
-    def process_measures(indexer=None, sync=False):
+    def process_measures(indexer=None, block_size=None, sync=False):
         """Process added measures in background.
 
         Some drivers might need to have a background task running that process
@@ -211,12 +218,13 @@ class StorageDriver(object):
         """
 
     @staticmethod
-    def measures_report():
+    def measures_report(details=True):
         """Return a report of pending to process measures.
 
         Only usefull for drivers that process measurements in background
 
-        :return: {metric_id: pending_measures_count}
+        :return: {'summary': {'metrics': count, 'measures': count},
+                  'details': {metric_id: pending_measures_count}}
         """
         raise exceptions.NotImplementedError
 
@@ -235,7 +243,7 @@ class StorageDriver(object):
             raise AggregationDoesNotExist(metric, aggregation)
 
     @staticmethod
-    def delete_metric(metric):
+    def delete_metric(metric, sync=False):
         raise exceptions.NotImplementedError
 
     @staticmethod
