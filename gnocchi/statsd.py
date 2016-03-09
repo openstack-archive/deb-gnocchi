@@ -19,6 +19,7 @@ try:
     import asyncio
 except ImportError:
     import trollius as asyncio
+from oslo_config import cfg
 from oslo_log import log
 import six
 
@@ -166,13 +167,17 @@ class StatsdServer(object):
 def start():
     conf = service.prepare_service()
 
+    for field in ["resource_id", "user_id", "project_id"]:
+        if conf.statsd[field] is None:
+            raise cfg.RequiredOptError(field, cfg.OptGroup("statsd"))
+
     stats = Stats(conf)
 
     loop = asyncio.get_event_loop()
     # TODO(jd) Add TCP support
     listen = loop.create_datagram_endpoint(
-        # TODO(jd) Add config options for host/port
-        lambda: StatsdServer(stats), local_addr=('0.0.0.0', 8125))
+        lambda: StatsdServer(stats),
+        local_addr=(conf.statsd.host, conf.statsd.port))
 
     def _flush():
         loop.call_later(conf.statsd.flush_delay, _flush)

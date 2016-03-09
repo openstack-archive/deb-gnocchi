@@ -1,4 +1,5 @@
 # Copyright (c) 2013 Mirantis Inc.
+# Copyright (c) 2015 Red Hat
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -18,11 +19,11 @@ import signal
 import sys
 import time
 
+from oslo_config import cfg
 from oslo_utils import timeutils
 import retrying
 
 from gnocchi import indexer
-from gnocchi.indexer import sqlalchemy as sql_db
 from gnocchi.rest import app
 from gnocchi import service
 from gnocchi import statsd as statsd_service
@@ -32,11 +33,24 @@ from gnocchi import storage
 LOG = logging.getLogger(__name__)
 
 
-def storage_dbsync():
-    conf = service.prepare_service()
-    index = sql_db.SQLAlchemyIndexer(conf)
-    index.connect()
-    index.upgrade()
+def upgrade():
+    conf = cfg.ConfigOpts()
+    conf.register_cli_opts([
+        cfg.BoolOpt("skip-index", default=False,
+                    help="Skip index upgrade."),
+        cfg.BoolOpt("skip-storage", default=False,
+                    help="Skip storage upgrade.")
+    ])
+    conf = service.prepare_service(conf=conf)
+    if not conf.skip_index:
+        index = indexer.get_driver(conf)
+        index.connect()
+        LOG.info("Upgrading indexer %s" % index)
+        index.upgrade()
+    if not conf.skip_storage:
+        s = storage.get_driver(conf)
+        LOG.info("Upgrading storage %s" % s)
+        s.upgrade(index)
 
 
 def api():
@@ -157,7 +171,7 @@ def metricd():
         _metricd_cleanup(workers)
         sys.exit(0)
     except Exception:
-        LOG.warn("exiting", exc_info=True)
+        LOG.warning("exiting", exc_info=True)
         _metricd_cleanup(workers)
         sys.exit(1)
 

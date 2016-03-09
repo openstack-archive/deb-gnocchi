@@ -48,7 +48,6 @@ OPTS = [
     cfg.StrOpt('ceph_username',
                help='Ceph username (ie: admin without "client." prefix).'),
     cfg.StrOpt('ceph_keyring',
-               default=None,
                help='Ceph keyring path.'),
     cfg.StrOpt('ceph_conffile',
                default='/etc/ceph/ceph.conf',
@@ -61,7 +60,6 @@ class CephStorage(_carbonara.CarbonaraBasedStorage):
     def __init__(self, conf):
         super(CephStorage, self).__init__(conf)
         self.pool = conf.ceph_pool
-        self._lock = _carbonara.CarbonaraBasedStorageToozLock(conf)
         options = {}
         if conf.ceph_keyring:
             options['keyring'] = conf.ceph_keyring
@@ -80,9 +78,6 @@ class CephStorage(_carbonara.CarbonaraBasedStorage):
                                  rados_id=conf.ceph_username,
                                  conf=options)
         self.rados.connect()
-
-    def stop(self):
-        self._lock.stop()
 
     def _store_measures(self, metric, data):
         # NOTE(sileht): list all objects in a pool is too slow with
@@ -183,8 +178,9 @@ class CephStorage(_carbonara.CarbonaraBasedStorage):
         return self.rados.open_ioctx(self.pool)
 
     @staticmethod
-    def _get_object_name(metric, lock_name):
-        return str("gnocchi_%s_%s" % (metric.id, lock_name))
+    def _get_object_name(metric, timestamp_key, aggregation, granularity):
+        return str("gnocchi_%s_%s_%s_%s" % (
+            metric.id, timestamp_key, aggregation, granularity))
 
     @staticmethod
     def _object_exists(ioctx, name):
@@ -195,17 +191,20 @@ class CephStorage(_carbonara.CarbonaraBasedStorage):
             return False
 
     def _create_metric(self, metric):
-        name = self._get_object_name(metric, 'container')
+        name = "gnocchi_%s_container" % metric.id
         with self._get_ioctx() as ioctx:
             if self._object_exists(ioctx, name):
                 raise storage.MetricAlreadyExists(metric)
             else:
                 ioctx.write_full(name, "metric created")
 
-    def _store_metric_measures(self, metric, aggregation, data):
-        name = self._get_object_name(metric, aggregation)
+    def _store_metric_measures(self, metric, timestamp_key,
+                               aggregation, granularity, data):
+        name = self._get_object_name(metric, timestamp_key,
+                                     aggregation, granularity)
         with self._get_ioctx() as ioctx:
             ioctx.write_full(name, data)
+            ioctx.set_xattr("gnocchi_%s_container" % metric.id, name, "")
 
     def _delete_metric_measures(self, metric, timestamp_key, aggregation,
                                 granularity):
@@ -227,16 +226,16 @@ class CephStorage(_carbonara.CarbonaraBasedStorage):
             for name in ('container', 'none'):
                 ioctx.aio_remove("gnocchi_%s_%s" % (metric.id, name))
 
-    def _get_measures(self, metric, aggregation):
+    def _get_measures(self, metric, timestamp_key, aggregation, granularity):
         try:
             with self._get_ioctx() as ioctx:
                 name = self._get_object_name(metric, timestamp_key,
                                              aggregation, granularity)
                 return self._get_object_content(ioctx, name)
         except rados.ObjectNotFound:
-            name = self._get_object_name(metric, 'container')
             with self._get_ioctx() as ioctx:
-                if self._object_exists(ioctx, name):
+                if self._object_exists(
+                        ioctx, "gnocchi_%s_container" % metric.id):
                     raise storage.AggregationDoesNotExist(metric, aggregation)
                 else:
                     raise storage.MetricDoesNotExist(metric)

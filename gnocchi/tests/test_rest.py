@@ -22,10 +22,8 @@ import hashlib
 import json
 import uuid
 
-import keystonemiddleware.auth_token
-from keystonemiddleware import opts as ks_opts
+from keystonemiddleware import fixture as ksm_fixture
 import mock
-import oslo_config
 from oslo_utils import timeutils
 import six
 from stevedore import extension
@@ -42,77 +40,18 @@ from gnocchi import utils
 load_tests = testscenarios.load_tests_apply_scenarios
 
 
-class FakeMemcache(object):
-    VALID_TOKEN_ADMIN = '4562138218392830'
-    ADMIN_TOKEN_HASH = hashlib.sha256(
-        VALID_TOKEN_ADMIN.encode('utf-8')).hexdigest()
+class TestingApp(webtest.TestApp):
+    VALID_TOKEN_ADMIN = str(uuid.uuid4())
     USER_ID_ADMIN = str(uuid.uuid4())
     PROJECT_ID_ADMIN = str(uuid.uuid4())
 
-    VALID_TOKEN = '4562138218392831'
-    TOKEN_HASH = hashlib.sha256(VALID_TOKEN.encode('utf-8')).hexdigest()
+    VALID_TOKEN = str(uuid.uuid4())
     USER_ID = str(uuid.uuid4())
     PROJECT_ID = str(uuid.uuid4())
 
-    VALID_TOKEN_2 = '4562138218392832'
-    TOKEN_2_HASH = hashlib.sha256(VALID_TOKEN_2.encode('utf-8')).hexdigest()
-    # We replace "-" to simulate a middleware that would send UUID in a non
-    # normalized format.
-    USER_ID_2 = str(uuid.uuid4()).replace("-", "")
-    PROJECT_ID_2 = str(uuid.uuid4()).replace("-", "")
-
-    def get(self, key):
-        dt = "2100-01-01T23:59:59"
-        if (key == "tokens/%s" % self.ADMIN_TOKEN_HASH or
-                key == "tokens/%s" % self.VALID_TOKEN_ADMIN):
-            return json.dumps(({'access': {
-                'token': {'id': self.VALID_TOKEN_ADMIN,
-                          'expires': dt},
-                'user': {
-                    'id': self.USER_ID_ADMIN,
-                    'name': 'adminusername',
-                    'tenantId': self.PROJECT_ID_ADMIN,
-                    'tenantName': 'myadmintenant',
-                    'roles': [
-                        {'name': 'admin'},
-                    ]},
-            }}, dt))
-        elif (key == "tokens/%s" % self.TOKEN_HASH or
-                key == "tokens/%s" % self.VALID_TOKEN):
-            return json.dumps(({'access': {
-                'token': {'id': self.VALID_TOKEN,
-                          'expires': dt},
-                'user': {
-                    'id': self.USER_ID,
-                    'name': 'myusername',
-                    'tenantId': self.PROJECT_ID,
-                    'tenantName': 'mytenant',
-                    'roles': [
-                        {'name': 'member'},
-                    ]},
-            }}, dt))
-        elif (key == "tokens/%s" % self.TOKEN_2_HASH or
-              key == "tokens/%s" % self.VALID_TOKEN_2):
-            return json.dumps(({'access': {
-                'token': {'id': self.VALID_TOKEN_2,
-                          'expires': dt},
-                'user': {
-                    'id': self.USER_ID_2,
-                    'name': 'myusername2',
-                    'tenantId': self.PROJECT_ID_2,
-                    'tenantName': 'mytenant2',
-                    'roles': [
-                        {'name': 'member'},
-                    ]},
-            }}, dt))
-
-    @staticmethod
-    def set(key, value, **kwargs):
-        pass
-
-
-class TestingApp(webtest.TestApp):
-    CACHE_NAME = 'fake.cache'
+    VALID_TOKEN_2 = str(uuid.uuid4())
+    USER_ID_2 = str(uuid.uuid4())
+    PROJECT_ID_2 = str(uuid.uuid4())
 
     def __init__(self, *args, **kwargs):
         self.auth = kwargs.pop('auth')
@@ -120,15 +59,14 @@ class TestingApp(webtest.TestApp):
         self.indexer = kwargs.pop('indexer')
         super(TestingApp, self).__init__(*args, **kwargs)
         # Setup Keystone auth_token fake cache
-        self.extra_environ.update({self.CACHE_NAME: FakeMemcache()})
-        self.token = FakeMemcache.VALID_TOKEN
+        self.token = self.VALID_TOKEN
 
     @contextlib.contextmanager
     def use_admin_user(self):
         if not self.auth:
             raise testcase.TestSkipped("No auth enabled")
         old_token = self.token
-        self.token = FakeMemcache.VALID_TOKEN_ADMIN
+        self.token = self.VALID_TOKEN_ADMIN
         try:
             yield
         finally:
@@ -139,7 +77,7 @@ class TestingApp(webtest.TestApp):
         if not self.auth:
             raise testcase.TestSkipped("No auth enabled")
         old_token = self.token
-        self.token = FakeMemcache.VALID_TOKEN_2
+        self.token = self.VALID_TOKEN_2
         try:
             yield
         finally:
@@ -320,8 +258,8 @@ class MetricTest(RestTest):
             params={
                 "id": str(uuid.uuid4()),
                 "started_at": "2014-01-01 02:02:02",
-                "user_id": FakeMemcache.USER_ID_2,
-                "project_id": FakeMemcache.PROJECT_ID_2,
+                "user_id": TestingApp.USER_ID_2,
+                "project_id": TestingApp.PROJECT_ID_2,
                 "metrics": {"foobar": {"archive_policy_name": "low"}},
             })
         resource = json.loads(result.text)
@@ -461,6 +399,7 @@ class MetricTest(RestTest):
         result = json.loads(ret.text)
         now = utils.utcnow()
         self.assertEqual([
+            ['2014-01-01T10:00:00+00:00', 3600.0, 1234.2],
             [(now
               - datetime.timedelta(
                   seconds=now.second,
@@ -833,8 +772,8 @@ class ResourceTest(RestTest):
         # Set original_resource_id
         self.resource['original_resource_id'] = self.resource['id']
         if self.auth:
-            self.resource['created_by_user_id'] = FakeMemcache.USER_ID
-            self.resource['created_by_project_id'] = FakeMemcache.PROJECT_ID
+            self.resource['created_by_user_id'] = TestingApp.USER_ID
+            self.resource['created_by_project_id'] = TestingApp.PROJECT_ID
         else:
             self.resource['created_by_user_id'] = None
             self.resource['created_by_project_id'] = None
@@ -1544,7 +1483,7 @@ class ResourceTest(RestTest):
                 "id": str(uuid.uuid4()),
                 "started_at": "2014-01-01 02:02:02",
                 "user_id": u1,
-                "project_id": FakeMemcache.PROJECT_ID_2,
+                "project_id": TestingApp.PROJECT_ID_2,
             })
         g = json.loads(result.text)
 
@@ -1709,8 +1648,8 @@ class ResourceTest(RestTest):
             params={
                 "id": str(uuid.uuid4()),
                 "started_at": "2014-01-01 02:02:02",
-                "user_id": FakeMemcache.USER_ID_2,
-                "project_id": FakeMemcache.PROJECT_ID_2,
+                "user_id": TestingApp.USER_ID_2,
+                "project_id": TestingApp.PROJECT_ID_2,
             })
         g = json.loads(result.text)
 

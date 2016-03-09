@@ -170,7 +170,7 @@ class TestIndexerDriver(tests_base.TestCase):
         m = self.index.list_metrics(id=rc.metrics[0].id)
         self.assertEqual(m[0], rc.metrics[0])
 
-    def _do_test_create_instance(self, server_group=None):
+    def _do_test_create_instance(self, server_group=None, image_ref=None):
         r1 = uuid.uuid4()
         user = str(uuid.uuid4())
         project = str(uuid.uuid4())
@@ -178,7 +178,7 @@ class TestIndexerDriver(tests_base.TestCase):
 
         rc = self.index.create_resource('instance', r1, user, project,
                                         flavor_id="1",
-                                        image_ref="http://foo/bar",
+                                        image_ref=image_ref,
                                         host="foo",
                                         display_name="lol", **kwargs)
         self.assertIsNotNone(rc.started_at)
@@ -196,7 +196,7 @@ class TestIndexerDriver(tests_base.TestCase):
                           "display_name": "lol",
                           "server_group": server_group,
                           "host": "foo",
-                          "image_ref": "http://foo/bar",
+                          "image_ref": image_ref,
                           "flavor_id": "1",
                           "original_resource_id": None,
                           "metrics": {}},
@@ -207,10 +207,14 @@ class TestIndexerDriver(tests_base.TestCase):
         self.assertEqual(rc.metrics, rg.metrics)
 
     def test_create_instance(self):
-        self._do_test_create_instance()
+        self._do_test_create_instance(image_ref='http://foo/bar')
 
     def test_create_instance_with_server_group(self):
-        self._do_test_create_instance('my_autoscaling_group')
+        self._do_test_create_instance('my_autoscaling_group',
+                                      image_ref='http://foo/bar')
+
+    def test_create_instance_without_image_ref(self):
+        self._do_test_create_instance(image_ref=None)
 
     def test_delete_resource(self):
         r1 = uuid.uuid4()
@@ -945,8 +949,18 @@ class TestIndexerDriver(tests_base.TestCase):
         self.index.create_metric(e1,
                                  user, project,
                                  archive_policy_name="low")
+        e2 = uuid.uuid4()
+        self.index.create_metric(e2,
+                                 user, project,
+                                 archive_policy_name="low")
         metrics = self.index.list_metrics()
-        self.assertIn(e1, [m.id for m in metrics])
+        id_list = [m.id for m in metrics]
+        self.assertIn(e1, id_list)
+        # Test ordering
+        if e1 < e2:
+            self.assertLess(id_list.index(e1), id_list.index(e2))
+        else:
+            self.assertLess(id_list.index(e2), id_list.index(e1))
 
     def test_list_metrics_delete_status(self):
         e1 = uuid.uuid4()

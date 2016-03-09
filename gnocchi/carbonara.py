@@ -3,8 +3,6 @@
 # Copyright © 2016 Red Hat, Inc.
 # Copyright © 2014-2015 eNovance
 #
-# Authors: Julien Danjou <julien@danjou.info>
-#
 # Licensed under the Apache License, Version 2.0 (the "License"); you may
 # not use this file except in compliance with the License. You may obtain
 # a copy of the License at
@@ -21,6 +19,7 @@
 import datetime
 import functools
 import logging
+import numbers
 import operator
 import re
 
@@ -30,11 +29,10 @@ import msgpack
 import pandas
 import six
 
+from gnocchi import utils
+
 
 LOG = logging.getLogger(__name__)
-
-AGGREGATION_METHODS = set(('mean', 'sum', 'last', 'max', 'min',
-                           'std', 'median', 'first', 'count'))
 
 
 class NoDeloreanAvailable(Exception):
@@ -98,7 +96,7 @@ class TimeSerie(SerializableMixin):
 
     @classmethod
     def from_tuples(cls, timestamps_values):
-        return cls(*zip(*timestamps_values))
+        return cls.from_data(*zip(*timestamps_values))
 
     def __eq__(self, other):
         return (isinstance(other, TimeSerie)
@@ -133,7 +131,8 @@ class TimeSerie(SerializableMixin):
         :param d: The dict.
         :returns: A TimeSerie object
         """
-        return cls(*cls._timestamps_and_values_from_dict(d['values']))
+        return cls.from_data(
+            *cls._timestamps_and_values_from_dict(d['values']))
 
     def to_dict(self):
         return {
@@ -145,12 +144,18 @@ class TimeSerie(SerializableMixin):
     @staticmethod
     def _serialize_time_period(value):
         if value:
-            return six.text_type(value.n) + value.rule_code
+            return value.nanos / 10e8
 
     @staticmethod
     def _round_timestamp(ts, freq):
         return pandas.Timestamp(
-            (ts.value // freq.delta.value) * freq.delta.value)
+            (pandas.Timestamp(ts).value // freq) * freq)
+
+    @staticmethod
+    def _to_offset(value):
+        if isinstance(value, numbers.Real):
+            return pandas.tseries.offsets.Nano(value * 10e8)
+        return pandas.tseries.frequencies.to_offset(value)
 
     @property
     def first(self):
@@ -168,8 +173,7 @@ class TimeSerie(SerializableMixin):
 
 
 class BoundTimeSerie(TimeSerie):
-    def __init__(self, timestamps=None, values=None,
-                 block_size=None, back_window=0):
+    def __init__(self, ts=None, block_size=None, back_window=0):
         """A time serie that is limited in size.
 
         Used to represent the full-resolution buffer of incoming raw
@@ -185,13 +189,16 @@ class BoundTimeSerie(TimeSerie):
         used.
 
         """
-        super(BoundTimeSerie, self).__init__(timestamps, values)
-        if isinstance(block_size, (float, six.integer_types)):
-            self.block_size = pandas.tseries.offsets.Nano(block_size * 10e8)
-        else:
-            self.block_size = pandas.tseries.frequencies.to_offset(block_size)
+        super(BoundTimeSerie, self).__init__(ts)
+        self.block_size = self._to_offset(block_size)
         self.back_window = back_window
         self._truncate()
+
+    @classmethod
+    def from_data(cls, timestamps=None, values=None,
+                  block_size=None, back_window=0):
+        return cls(pandas.Series(values, timestamps),
+                   block_size=block_size, back_window=back_window)
 
     def __eq__(self, other):
         return (isinstance(other, BoundTimeSerie)
@@ -233,9 +240,9 @@ class BoundTimeSerie(TimeSerie):
         :returns: A TimeSerie object
         """
         timestamps, values = cls._timestamps_and_values_from_dict(d['values'])
-        return cls(timestamps, values,
-                   block_size=d.get('block_size'),
-                   back_window=d.get('back_window'))
+        return cls.from_data(timestamps, values,
+                             block_size=d.get('block_size'),
+                             back_window=d.get('back_window'))
 
     def to_dict(self):
         basic = super(BoundTimeSerie, self).to_dict()
@@ -246,7 +253,8 @@ class BoundTimeSerie(TimeSerie):
         return basic
 
     def _first_block_timestamp(self):
-        rounded = self._round_timestamp(self.ts.index[-1], self.block_size)
+        rounded = self._round_timestamp(self.ts.index[-1],
+                                        self.block_size.delta.value)
         return rounded - (self.block_size * self.back_window)
 
     def _truncate(self):
@@ -272,7 +280,7 @@ class AggregatedTimeSerie(TimeSerie):
         granularity/aggregation-function pair stored for a metric.
 
         """
-        super(AggregatedTimeSerie, self).__init__(timestamps, values)
+        super(AggregatedTimeSerie, self).__init__(ts)
 
         m = self._AGG_METHOD_PCT_RE.match(aggregation_method)
 
@@ -340,6 +348,15 @@ class AggregatedTimeSerie(TimeSerie):
                 and self.max_size == other.max_size
                 and self.sampling == other.sampling
                 and self.aggregation_method == other.aggregation_method)
+
+    def __repr__(self):
+        return "<%s 0x%x sampling=%fs max_size=%s agg_method=%s>" % (
+            self.__class__.__name__,
+            id(self),
+            self.sampling,
+            self.max_size,
+            self.aggregation_method,
+        )
 
     @classmethod
     def from_dict(cls, d):
@@ -429,6 +446,28 @@ class AggregatedTimeSerie(TimeSerie):
         # that is before `after'
         self.ts = aggregated.combine_first(self.ts[:after][:-1])
 
+    def fetch(self, from_timestamp=None, to_timestamp=None):
+        """Fetch aggregated time value.
+
+        Returns a sorted list of tuples (timestamp, granularity, value).
+        """
+        # Round timestamp to our granularity so we're sure that if e.g. 17:02
+        # is requested and we have points for 17:00 and 17:05 in a 5min
+        # granularity, we do return the 17:00 point and not nothing
+        if from_timestamp is None:
+            from_ = None
+        else:
+            from_ = self._round_timestamp(from_timestamp, self.sampling * 10e8)
+        points = self[from_:to_timestamp]
+        try:
+            # Do not include stop timestamp
+            del points[to_timestamp]
+        except KeyError:
+            pass
+        return [(timestamp, self.sampling, value)
+                for timestamp, value
+                in six.iteritems(points)]
+
     def update(self, ts):
         if ts.ts.empty:
             return
@@ -452,80 +491,6 @@ class AggregatedTimeSerie(TimeSerie):
         self._resample(first_timestamp)
         self._truncate()
 
-
-class TimeSerieArchive(SerializableMixin):
-
-    def __init__(self, agg_timeseries):
-        """A raw data buffer and a collection of downsampled timeseries.
-
-        Used to represent the set of AggregatedTimeSeries for the range of
-        granularities supported for a metric (for a particular aggregation
-        function).
-
-        """
-        self.agg_timeseries = sorted(agg_timeseries,
-                                     key=operator.attrgetter("sampling"))
-
-    @property
-    def max_block_size(self):
-        return max(agg.sampling for agg in self.agg_timeseries)
-
-    @classmethod
-    def from_definitions(cls, definitions, aggregation_method='mean'):
-        """Create a new collection of archived time series.
-
-        :param definition: A list of tuple (sampling, max_size)
-        :param aggregation_method: Aggregation function to use.
-        """
-        # Limit the main timeserie to a timespan mapping
-        return cls(
-            [AggregatedTimeSerie(
-                max_size=size,
-                sampling=pandas.tseries.offsets.Nano(sampling * 10e8),
-                aggregation_method=aggregation_method)
-             for sampling, size in definitions]
-        )
-
-    def fetch(self, from_timestamp=None, to_timestamp=None,
-              timeserie_filter=None):
-        """Fetch aggregated time value.
-
-        Returns a sorted list of tuples (timestamp, granularity, value).
-        """
-        result = []
-        end_timestamp = to_timestamp
-        for ts in reversed(self.agg_timeseries):
-            if timeserie_filter and not timeserie_filter(ts):
-                continue
-            granularity = ts.sampling.nanos / 1000000000.0
-            points = ts[from_timestamp:to_timestamp]
-            try:
-                # Do not include stop timestamp
-                del points[end_timestamp]
-            except KeyError:
-                pass
-            result.extend([(timestamp, granularity, value)
-                           for timestamp, value
-                           in six.iteritems(points)])
-        return result
-
-    def __eq__(self, other):
-        return (isinstance(other, TimeSerieArchive)
-                and self.agg_timeseries == other.agg_timeseries)
-
-    def update(self, timeserie):
-        for agg in self.agg_timeseries:
-            agg.update(timeserie)
-
-    def to_dict(self):
-        return {
-            "archives": [ts.to_dict() for ts in self.agg_timeseries],
-        }
-
-    @classmethod
-    def from_dict(cls, d):
-        return cls([AggregatedTimeSerie.from_dict(a) for a in d['archives']])
-
     @staticmethod
     def aggregated(timeseries, from_timestamp=None, to_timestamp=None,
                    aggregation='mean', needed_percent_of_overlap=100.0):
@@ -537,16 +502,8 @@ class TimeSerieArchive(SerializableMixin):
         if not timeseries:
             return []
 
-        granularities = [set(ts.sampling for ts in timeserie.agg_timeseries)
-                         for timeserie in timeseries]
-        granularities = granularities[0].intersection(*granularities[1:])
-        if len(granularities) == 0:
-            raise UnAggregableTimeseries('No granularity match')
-
         for timeserie in timeseries:
-            timeserie_raw = timeserie.fetch(
-                from_timestamp, to_timestamp,
-                lambda ts: ts.sampling in granularities)
+            timeserie_raw = timeserie.fetch(from_timestamp, to_timestamp)
 
             if timeserie_raw:
                 dataframe = pandas.DataFrame(timeserie_raw, columns=columns)
@@ -556,20 +513,37 @@ class TimeSerieArchive(SerializableMixin):
         if not dataframes:
             return []
 
+        number_of_distinct_datasource = len(timeseries) / len(
+            set(ts.sampling for ts in timeseries)
+        )
+
         grouped = pandas.concat(dataframes).groupby(level=index)
         left_boundary_ts = None
         right_boundary_ts = None
         maybe_next_timestamp_is_left_boundary = False
+
+        left_holes = 0
+        right_holes = 0
         holes = 0
         for (timestamp, __), group in grouped:
-            if group.count()['value'] != len(timeseries):
+            if group.count()['value'] != number_of_distinct_datasource:
                 maybe_next_timestamp_is_left_boundary = True
-                holes += 1
+                if left_boundary_ts is not None:
+                    right_holes += 1
+                else:
+                    left_holes += 1
             elif maybe_next_timestamp_is_left_boundary:
                 left_boundary_ts = timestamp
                 maybe_next_timestamp_is_left_boundary = False
             else:
                 right_boundary_ts = timestamp
+                holes += right_holes
+                right_holes = 0
+
+        if to_timestamp is not None:
+            holes += left_holes
+        if from_timestamp is not None:
+            holes += right_holes
 
         if to_timestamp is not None or from_timestamp is not None:
             maximum = len(grouped)
@@ -580,7 +554,7 @@ class TimeSerieArchive(SerializableMixin):
                     'Less than %f%% of datapoints overlap in this '
                     'timespan (%.2f%%)' % (needed_percent_of_overlap,
                                            percent_of_overlap))
-        elif (needed_percent_of_overlap > 0 and
+        if (needed_percent_of_overlap > 0 and
                 (right_boundary_ts == left_boundary_ts or
                  (right_boundary_ts is None
                   and maybe_next_timestamp_is_left_boundary))):
@@ -597,7 +571,7 @@ class TimeSerieArchive(SerializableMixin):
 
         # NOTE(sileht): this call the aggregation method on already
         # aggregated values, for some kind of aggregation this can
-        # result can looks wierd, but this is the best we can do
+        # result can looks weird, but this is the best we can do
         # because we don't have anymore the raw datapoints in those case.
         # FIXME(sileht): so should we bailout is case of stddev, percentile
         # and median?
@@ -617,63 +591,69 @@ class TimeSerieArchive(SerializableMixin):
                 for __, timestamp, granularity, value in points]
 
 
-import argparse
-import datetime
+class TimeSerieArchive(SerializableMixin):
 
-from oslo_utils import timeutils
-import prettytable
+    def __init__(self, agg_timeseries):
+        """A raw data buffer and a collection of downsampled timeseries.
 
+        Used to represent the set of AggregatedTimeSeries for the range of
+        granularities supported for a metric (for a particular aggregation
+        function).
 
-def _definition(value):
-    result = value.split(",")
-    if len(result) != 2:
-        raise ValueError("Format is: seconds,points")
-    return int(result[0]), int(result[1])
+        """
+        self.agg_timeseries = sorted(agg_timeseries,
+                                     key=operator.attrgetter("sampling"))
 
+    @classmethod
+    def from_definitions(cls, definitions, aggregation_method='mean'):
+        """Create a new collection of archived time series.
 
-def create_archive_file():
-    parser = argparse.ArgumentParser(
-        description="Create a Carbonara file",
-    )
-    parser.add_argument("--aggregation-method",
-                        type=six.text_type,
-                        default="mean",
-                        choices=AGGREGATION_METHODS,
-                        help="aggregation method to use")
-    parser.add_argument("--back-window",
-                        type=int,
-                        default=0,
-                        help="back window to keep")
-    parser.add_argument("definition",
-                        type=_definition,
-                        nargs='+',
-                        help="archive definition as granularity,points")
-    parser.add_argument("filename",
-                        nargs=1,
-                        type=argparse.FileType(mode="wb"),
-                        help="File name to create")
-    args = parser.parse_args()
-    ts = TimeSerieArchive.from_definitions(args.definition,
-                                           args.aggregation_method)
-    args.filename[0].write(ts.serialize())
+        :param definition: A list of tuple (sampling, max_size)
+        :param aggregation_method: Aggregation function to use.
+        """
+        # Limit the main timeserie to a timespan mapping
+        return cls(
+            [AggregatedTimeSerie(
+                max_size=size,
+                sampling=sampling,
+                aggregation_method=aggregation_method)
+             for sampling, size in definitions]
+        )
 
+    def fetch(self, from_timestamp=None, to_timestamp=None,
+              timeserie_filter=None):
+        """Fetch aggregated time value.
 
-def dump_archive_file():
-    parser = argparse.ArgumentParser(
-        description="Dump a Carbonara file",
-    )
-    parser.add_argument("filename",
-                        nargs=1,
-                        type=argparse.FileType(mode="rb"),
-                        help="File name to read")
-    args = parser.parse_args()
+        Returns a sorted list of tuples (timestamp, granularity, value).
+        """
+        result = []
+        end_timestamp = to_timestamp
+        for ts in reversed(self.agg_timeseries):
+            if timeserie_filter and not timeserie_filter(ts):
+                continue
+            points = ts[from_timestamp:to_timestamp]
+            try:
+                # Do not include stop timestamp
+                del points[end_timestamp]
+            except KeyError:
+                pass
+            result.extend([(timestamp, ts.sampling, value)
+                           for timestamp, value
+                           in six.iteritems(points)])
+        return result
 
-    ts = TimeSerieArchive.unserialize_from_file(args.filename[0])
+    def update(self, timeserie):
+        for agg in self.agg_timeseries:
+            agg.update(timeserie)
 
-    print("Aggregation method: %s"
-          % (ts.agg_timeseries[0].aggregation_method))
+    def to_dict(self):
+        return {
+            "archives": [ts.to_dict() for ts in self.agg_timeseries],
+        }
 
-    print("Number of aggregated timeseries: %d" % len(ts.agg_timeseries))
+    def __eq__(self, other):
+        return (isinstance(other, TimeSerieArchive)
+                and self.agg_timeseries == other.agg_timeseries)
 
     @classmethod
     def from_dict(cls, d):

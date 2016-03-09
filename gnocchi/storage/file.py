@@ -44,7 +44,6 @@ class FileStorage(_carbonara.CarbonaraBasedStorage):
         super(FileStorage, self).__init__(conf)
         self.basepath = conf.file_basepath
         self.basepath_tmp = conf.file_basepath_tmp
-        self._lock = _carbonara.CarbonaraBasedStorageToozLock(conf)
         try:
             os.mkdir(self.basepath)
         except OSError as e:
@@ -67,14 +66,26 @@ class FileStorage(_carbonara.CarbonaraBasedStorage):
                                            dir=self.basepath_tmp,
                                            delete=False)
 
-    def stop(self):
-        self._lock.stop()
+    def _atomic_file_store(self, dest, data):
+        tmpfile = self._get_tempfile()
+        tmpfile.write(data)
+        tmpfile.close()
+        os.rename(tmpfile.name, dest)
 
-    def _build_metric_path(self, metric, aggregation=None):
-        path = os.path.join(self.basepath, str(metric.id))
-        if aggregation:
-            return os.path.join(path, aggregation)
-        return path
+    def _build_metric_dir(self, metric):
+        return os.path.join(self.basepath, str(metric.id))
+
+    def _build_unaggregated_timeserie_path(self, metric):
+        return os.path.join(self._build_metric_dir(metric), 'none')
+
+    def _build_metric_path(self, metric, aggregation):
+        return os.path.join(self._build_metric_dir(metric),
+                            "agg_" + aggregation)
+
+    def _build_metric_path_for_split(self, metric, aggregation,
+                                     timestamp_key, granularity):
+        return os.path.join(self._build_metric_path(metric, aggregation),
+                            timestamp_key + "_" + str(granularity))
 
     def _build_measure_path(self, metric_id, random_id=None):
         path = os.path.join(self.measure_path, six.text_type(metric_id))
@@ -86,13 +97,19 @@ class FileStorage(_carbonara.CarbonaraBasedStorage):
         return path
 
     def _create_metric(self, metric):
-        path = self._build_metric_path(metric)
+        path = self._build_metric_dir(metric)
         try:
             os.mkdir(path, 0o750)
         except OSError as e:
             if e.errno == errno.EEXIST:
                 raise storage.MetricAlreadyExists(metric)
             raise
+        for agg in metric.archive_policy.aggregation_methods:
+            try:
+                os.mkdir(self._build_metric_path(metric, agg), 0o750)
+            except OSError as e:
+                if e.errno != errno.EEXIST:
+                    raise
 
     def _store_measures(self, metric, data):
         tmpfile = self._get_tempfile()
@@ -218,7 +235,7 @@ class FileStorage(_carbonara.CarbonaraBasedStorage):
             data)
 
     def _delete_metric(self, metric):
-        path = self._build_metric_path(metric)
+        path = self._build_metric_dir(metric)
         try:
             shutil.rmtree(path)
         except OSError as e:
@@ -227,15 +244,48 @@ class FileStorage(_carbonara.CarbonaraBasedStorage):
                 # measures)
                 raise
 
-    def _get_measures(self, metric, aggregation):
-        path = self._build_metric_path(metric, aggregation)
+    def _get_measures(self, metric, timestamp_key, aggregation, granularity):
+        path = self._build_metric_path_for_split(metric, aggregation,
+                                                 timestamp_key, granularity)
         try:
             with open(path, 'rb') as aggregation_file:
                 return aggregation_file.read()
         except IOError as e:
             if e.errno == errno.ENOENT:
-                if os.path.exists(self._build_metric_path(metric)):
+                if os.path.exists(self._build_metric_dir(metric)):
                     raise storage.AggregationDoesNotExist(metric, aggregation)
-                else:
-                    raise storage.MetricDoesNotExist(metric)
+                raise storage.MetricDoesNotExist(metric)
             raise
+
+    # The following methods deal with Gnocchi <= 1.3 archives
+    def _build_metric_archive_path(self, metric, aggregation):
+        return os.path.join(self._build_metric_dir(metric), aggregation)
+
+    def _get_metric_archive(self, metric, aggregation):
+        """Retrieve data in the place we used to store TimeSerieArchive."""
+        path = self._build_metric_archive_path(metric, aggregation)
+        try:
+            with open(path, 'rb') as aggregation_file:
+                return aggregation_file.read()
+        except IOError as e:
+            if e.errno == errno.ENOENT:
+                if os.path.exists(self._build_metric_dir(metric)):
+                    raise storage.AggregationDoesNotExist(metric, aggregation)
+                raise storage.MetricDoesNotExist(metric)
+            raise
+
+    def _store_metric_archive(self, metric, aggregation, data):
+        """Stores data in the place we used to store TimeSerieArchive."""
+        self._atomic_file_store(
+            self._build_metric_archive_path(metric, aggregation),
+            data)
+
+    def _delete_metric_archives(self, metric):
+        for agg in metric.archive_policy.aggregation_methods:
+            try:
+                os.unlink(self._build_metric_archive_path(metric, agg))
+            except OSError as e:
+                if e.errno != errno.ENOENT:
+                    # NOTE(jd) Maybe the metric has never been created (no
+                    # measures)
+                    raise

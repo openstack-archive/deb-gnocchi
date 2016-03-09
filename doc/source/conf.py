@@ -15,7 +15,6 @@ import os
 import subprocess
 
 import oslosphinx
-import sphinx_bootstrap_theme
 
 # If extensions (or modules to document with autodoc) are in another directory,
 # add these directories to sys.path here. If the directory is relative to the
@@ -106,24 +105,13 @@ html_theme = 'openstack'
 # Theme options are theme-specific and customize the look and feel of a theme
 # further.  For a list of options available for each theme, see the
 # documentation.
-if html_theme == "bootstrap":
-    html_theme_options = {
-        'navbar_class': "navbar navbar-inverse",
-        'navbar_site_name': "Documentation",
-        'navbar_links': [
-            ("Launchpad project", "https://launchpad.net/gnocchi", True),
-            ("Bug tracking", "https://bugs.launchpad.net/gnocchi", True),
-            ("Git", "http://github.com/openstack/gnocchi", True),
-        ],
-        'navbar_sidebarrel': False,
-        'navbar_pagenav': False,
-        'globaltoc_depth': 2,
-    }
+if html_theme == "sphinx_rtd_theme":
+    import sphinx_rtd_theme
+    html_theme_path = [sphinx_rtd_theme.get_html_theme_path()]
+else:
+    html_theme_path = [os.path.join(os.path.dirname(oslosphinx.__file__),
+                                    'theme')]
 
-# Add any paths that contain custom themes here, relative to this directory.
-#html_theme_path = []
-html_theme_path = ([os.path.join(os.path.dirname(oslosphinx.__file__), 'theme')]
-                   + sphinx_bootstrap_theme.get_html_theme_path())
 
 # The name for this set of Sphinx documents.  If None, it defaults to
 # "<project> v<release> documentation".

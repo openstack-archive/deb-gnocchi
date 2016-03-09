@@ -77,6 +77,15 @@
       "archive_policy_name": "low"
     }
 
+- name: create-metric-2
+  request: |
+    POST /v1/metric HTTP/1.1
+    Content-Type: application/json
+
+    {
+      "archive_policy_name": "low"
+    }
+
 - name: create-archive-policy-rule
   request: |
     POST /v1/archive_policy_rule HTTP/1.1
@@ -180,6 +189,9 @@
 
 - name: get-measures-max
   request: GET /v1/metric/{{ scenarios['create-metric']['response'].json['id'] }}/measures?aggregation=max HTTP/1.1
+
+- name: get-measures-granularity
+  request: GET /v1/metric/{{ scenarios['create-metric']['response'].json['id'] }}/measures?granularity=1 HTTP/1.1
 
 - name: create-resource-generic
   request: |

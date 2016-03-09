@@ -17,7 +17,6 @@
 import itertools
 import uuid
 
-from oslo_log import log
 from oslo_utils import strutils
 import pecan
 from pecan import rest
@@ -34,8 +33,6 @@ from gnocchi import indexer
 from gnocchi import json
 from gnocchi import storage
 from gnocchi import utils
-
-LOG = log.getLogger(__name__)
 
 
 def arg_to_list(value):
@@ -228,9 +225,7 @@ def get_pagination_options(params, default):
         sorts = [sorts]
 
     try:
-        limit = int(limit)
-        if limit <= 0:
-            raise ValueError
+        limit = PositiveNotNullInt(limit)
     except ValueError:
         abort(400, "Invalid 'limit' value: %s" % params.get('limit'))
 
@@ -384,13 +379,15 @@ class AggregatedMetricController(rest.RestController):
 
     @pecan.expose('json')
     def get_measures(self, start=None, stop=None, aggregation='mean',
-                     needed_overlap=100.0):
+                     granularity=None, needed_overlap=100.0):
         return self.get_cross_metric_measures_from_ids(
-            self.metric_ids, start, stop, aggregation, needed_overlap)
+            self.metric_ids, start, stop,
+            aggregation, granularity, needed_overlap)
 
     @classmethod
     def get_cross_metric_measures_from_ids(cls, metric_ids, start=None,
                                            stop=None, aggregation='mean',
+                                           granularity=None,
                                            needed_overlap=100.0):
         # Check RBAC policy
         metrics = pecan.request.indexer.list_metrics(ids=metric_ids)
@@ -401,11 +398,12 @@ class AggregatedMetricController(rest.RestController):
             abort(404, storage.MetricDoesNotExist(
                 missing_metric_ids.pop()))
         return cls.get_cross_metric_measures_from_objs(
-            metrics, start, stop, aggregation, needed_overlap)
+            metrics, start, stop, aggregation, granularity, needed_overlap)
 
     @staticmethod
     def get_cross_metric_measures_from_objs(metrics, start=None, stop=None,
                                             aggregation='mean',
+                                            granularity=None,
                                             needed_overlap=100.0):
         try:
             needed_overlap = float(needed_overlap)
@@ -435,15 +433,26 @@ class AggregatedMetricController(rest.RestController):
         for metric in metrics:
             enforce("get metric", metric)
 
+        number_of_metrics = len(metrics)
         try:
-            if len(metrics) == 1:
+            if number_of_metrics == 0:
+                return []
+            if granularity is not None:
+                try:
+                    granularity = float(granularity)
+                except ValueError as e:
+                    abort(400, "granularity must be a float: %s" % e)
+            if number_of_metrics == 1:
                 # NOTE(sileht): don't do the aggregation if we only have one
                 # metric
                 measures = pecan.request.storage.get_measures(
-                    metrics[0], start, stop, aggregation)
+                    metrics[0], start, stop, aggregation,
+                    granularity)
             else:
                 measures = pecan.request.storage.get_cross_metric_measures(
-                    metrics, start, stop, aggregation, needed_overlap)
+                    metrics, start, stop, aggregation,
+                    granularity,
+                    needed_overlap)
             # Replace timestamp keys by their string versions
             return [(timestamp.isoformat(), offset, v)
                     for timestamp, offset, v in measures]
@@ -456,6 +465,21 @@ class AggregatedMetricController(rest.RestController):
             abort(404, e)
 
 
+def MeasureSchema(m):
+    # NOTE(sileht): don't use voluptuous for performance reasons
+    try:
+        value = float(m['value'])
+    except Exception:
+        abort(400, "Invalid input for a value")
+
+    try:
+        timestamp = utils.to_timestamp(m['timestamp'])
+    except Exception:
+        abort(400, "Invalid input for a timestamp")
+
+    return storage.Measure(timestamp, value)
+
+
 class MetricController(rest.RestController):
     _custom_actions = {
         'measures': ['POST', 'GET']
@@ -466,23 +490,6 @@ class MetricController(rest.RestController):
         mgr = extension.ExtensionManager(namespace='gnocchi.aggregates',
                                          invoke_on_load=True)
         self.custom_agg = dict((x.name, x.obj) for x in mgr)
-
-    @staticmethod
-    def to_measure(m):
-        # NOTE(sileht): we do the input validation
-        # during the iteration for not loop just for this
-        # and don't use voluptuous for performance reason
-        try:
-            value = float(m['value'])
-        except Exception:
-            abort(400, "Invalid input for a value")
-
-        try:
-            timestamp = utils.to_timestamp(m['timestamp'])
-        except Exception:
-            abort(400, "Invalid input for a timestamp")
-
-        return storage.Measure(timestamp, value)
 
     def enforce_metric(self, rule):
         enforce(rule, json.to_primitive(self.metric))
@@ -500,7 +507,7 @@ class MetricController(rest.RestController):
             abort(400, "Invalid input for measures")
         if params:
             pecan.request.storage.add_measures(
-                self.metric, six.moves.map(self.to_measure, params))
+                self.metric, six.moves.map(MeasureSchema, params))
         pecan.response.status = 202
 
     @pecan.expose('json')
@@ -537,13 +544,13 @@ class MetricController(rest.RestController):
             else:
                 measures = pecan.request.storage.get_measures(
                     self.metric, start, stop, aggregation,
-                    int(granularity) if granularity is not None else None)
+                    float(granularity) if granularity is not None else None)
             # Replace timestamp keys by their string versions
             return [(timestamp.isoformat(), offset, v)
                     for timestamp, offset, v in measures]
-        except storage.MetricDoesNotExist as e:
-            abort(404, e)
-        except storage.AggregationDoesNotExist as e:
+        except (storage.MetricDoesNotExist,
+                storage.GranularityDoesNotExist,
+                storage.AggregationDoesNotExist) as e:
             abort(404, e)
         except aggregates.CustomAggFailure as e:
             abort(400, e)
@@ -688,7 +695,8 @@ class NamedMetricController(rest.RestController):
 
     @pecan.expose()
     def _lookup(self, name, *remainder):
-        m = pecan.request.indexer.list_metrics(details=True,
+        details = True if pecan.request.method == 'GET' else False
+        m = pecan.request.indexer.list_metrics(details=details,
                                                name=name,
                                                resource_id=self.resource_id)
         if m:
@@ -808,12 +816,10 @@ def ResourceSchema(schema):
     return base_schema
 
 
-class GenericResourceController(rest.RestController):
-    _resource_type = 'generic'
+class ResourceController(rest.RestController):
 
-    Resource = ResourceSchema({})
-
-    def __init__(self, id):
+    def __init__(self, resource_type, id):
+        self._resource_type = resource_type
         try:
             self.id = utils.ResourceUUID(id)
         except ValueError:
@@ -842,7 +848,9 @@ class GenericResourceController(rest.RestController):
         enforce("update resource", resource)
         etag_precondition_check(resource)
 
-        body = deserialize_and_validate(self.Resource, required=False)
+        body = deserialize_and_validate(
+            schema_for(self._resource_type),
+            required=False)
 
         if len(body) == 0:
             etag_set_headers(resource)
@@ -860,8 +868,6 @@ class GenericResourceController(rest.RestController):
             create_revision = False
 
         try:
-            if 'metrics' in body:
-                user, project = get_user_and_project()
             resource = pecan.request.indexer.update_resource(
                 self._resource_type,
                 self.id,
@@ -890,44 +896,45 @@ class GenericResourceController(rest.RestController):
             abort(404, e)
 
 
-class SwiftAccountResourceController(GenericResourceController):
-    _resource_type = 'swift_account'
+GenericSchema = ResourceSchema({})
+
+InstanceDiskSchema = ResourceSchema({
+    "name": six.text_type,
+    "instance_id": UUID,
+})
+
+InstanceNetworkInterfaceSchema = ResourceSchema({
+    "name": six.text_type,
+    "instance_id": UUID,
+})
+
+InstanceSchema = ResourceSchema({
+    "flavor_id": six.text_type,
+    voluptuous.Optional("image_ref"): six.text_type,
+    "host": six.text_type,
+    "display_name": six.text_type,
+    voluptuous.Optional("server_group"): six.text_type,
+})
+
+VolumeSchema = ResourceSchema({
+    voluptuous.Optional("display_name"): voluptuous.Any(None,
+                                                        six.text_type),
+})
+
+ImageSchema = ResourceSchema({
+    "name": six.text_type,
+    "container_format": six.text_type,
+    "disk_format": six.text_type,
+})
 
 
-class InstanceDiskResourceController(GenericResourceController):
-    _resource_type = 'instance_disk'
-    Resource = ResourceSchema({
-        "name": six.text_type,
-        "instance_id": UUID,
-    })
+# NOTE(sileht): Must be loaded after all ResourceSchema
+RESOURCE_SCHEMA_MANAGER = extension.ExtensionManager(
+    'gnocchi.controller.schemas')
 
 
-class InstanceNetworkInterfaceResourceController(GenericResourceController):
-    _resource_type = 'instance_network_interface'
-    Resource = ResourceSchema({
-        "name": six.text_type,
-        "instance_id": UUID,
-    })
-
-
-class InstanceResourceController(GenericResourceController):
-    _resource_type = 'instance'
-
-    Resource = ResourceSchema({
-        "flavor_id": six.text_type,
-        "image_ref": six.text_type,
-        "host": six.text_type,
-        "display_name": six.text_type,
-        voluptuous.Optional("server_group"): six.text_type,
-    })
-
-
-class VolumeResourceController(GenericResourceController):
-    _resource_type = 'volume'
-
-    Resource = ResourceSchema({
-        "display_name": six.text_type,
-    })
+def schema_for(resource_type):
+    return RESOURCE_SCHEMA_MANAGER[resource_type].plugin
 
 
 def ResourceID(value):
@@ -940,7 +947,7 @@ class ResourcesController(rest.RestController):
 
     @pecan.expose()
     def _lookup(self, id, *remainder):
-        return self._resource_rest_class(id), remainder
+        return ResourceController(self._resource_type, id), remainder
 
     @pecan.expose('json')
     def post(self):
@@ -1001,77 +1008,7 @@ class ResourcesController(rest.RestController):
             abort(400, e)
 
 
-class SwiftAccountsResourcesController(GenericResourcesController):
-    _resource_type = 'swift_account'
-    _resource_rest_class = SwiftAccountResourceController
-
-
-class InstanceDisksResourcesController(GenericResourcesController):
-    _resource_type = 'instance_disk'
-    _resource_rest_class = InstanceDiskResourceController
-
-    Resource = InstanceDiskResourceController.Resource
-
-
-class InstanceNetworkInterfacesResourcesController(GenericResourcesController):
-    _resource_type = 'instance_network_interface'
-    _resource_rest_class = InstanceNetworkInterfaceResourceController
-
-    Resource = InstanceNetworkInterfaceResourceController.Resource
-
-
-class InstancesResourcesController(GenericResourcesController):
-    _resource_type = 'instance'
-    _resource_rest_class = InstanceResourceController
-
-    Resource = InstanceResourceController.Resource
-
-
-class VolumesResourcesController(GenericResourcesController):
-    _resource_type = 'volume'
-    _resource_rest_class = VolumeResourceController
-
-    Resource = VolumeResourceController.Resource
-
-
-class CephAccountsResourcesController(GenericResourcesController):
-    _resource_type = 'ceph_account'
-    _resource_rest_class = CephAccountResourceController
-
-
-class NetworkResourcesController(GenericResourcesController):
-    _resource_type = 'network'
-    _resource_rest_class = NetworkResourceController
-
-
-class IdentityResourcesController(GenericResourcesController):
-    _resource_type = 'identity'
-    _resource_rest_class = IdentityResourceController
-
-
-class IPMIResourcesController(GenericResourcesController):
-    _resource_type = 'ipmi'
-    _resource_rest_class = IPMIResourceController
-
-
-class StackResourcesController(GenericResourcesController):
-    _resource_type = 'stack'
-    _resource_rest_class = StackResourceController
-
-
-class ImageResourcesController(GenericResourcesController):
-    _resource_type = 'image'
-    _resource_rest_class = ImageResourceController
-
-    Resource = ImageResourceController.Resource
-
-
-class ResourcesController(rest.RestController):
-    resources_ctrl_by_type = dict(
-        (ext.name, ext.plugin())
-        for ext in extension.ExtensionManager(
-            'gnocchi.controller.resources').extensions)
-
+class ResourcesByTypeController(rest.RestController):
     @pecan.expose('json')
     def get_all(self):
         return dict(
@@ -1081,11 +1018,10 @@ class ResourcesController(rest.RestController):
 
     @pecan.expose()
     def _lookup(self, resource_type, *remainder):
-        ctrl = self.resources_ctrl_by_type.get(resource_type)
-        if ctrl:
-            return ctrl, remainder
+        if resource_type in RESOURCE_SCHEMA_MANAGER:
+            return ResourcesController(resource_type), remainder
         else:
-            abort(404, indexer.UnknownResourceType(resource_type))
+            abort(404, indexer.NoSuchResourceType(resource_type))
 
 
 def _ResourceSearchSchema(v):
@@ -1161,10 +1097,10 @@ class SearchResourceTypeController(rest.RestController):
 class SearchResourceController(rest.RestController):
     @pecan.expose()
     def _lookup(self, resource_type, *remainder):
-        if resource_type in ResourcesController.resources_ctrl_by_type:
+        if resource_type in RESOURCE_SCHEMA_MANAGER:
             return SearchResourceTypeController(resource_type), remainder
         else:
-            abort(404, indexer.UnknownResourceType(resource_type))
+            abort(404, indexer.NoSuchResourceType(resource_type))
 
 
 def _MetricSearchSchema(v):
@@ -1405,9 +1341,10 @@ class AggregationController(rest.RestController):
     @pecan.expose('json')
     def get_metric(self, metric=None, start=None,
                    stop=None, aggregation='mean',
-                   needed_overlap=100.0):
+                   granularity=None, needed_overlap=100.0):
         return AggregatedMetricController.get_cross_metric_measures_from_ids(
-            arg_to_list(metric), start, stop, aggregation, needed_overlap)
+            arg_to_list(metric), start, stop, aggregation,
+            granularity, needed_overlap)
 
 
 class CapabilityController(rest.RestController):

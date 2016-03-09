@@ -3,8 +3,6 @@
 # Copyright © 2016 Red Hat, Inc.
 # Copyright © 2014-2015 eNovance
 #
-# Authors: Julien Danjou <julien@danjou.info>
-#
 # Licensed under the Apache License, Version 2.0 (the "License"); you may
 # not use this file except in compliance with the License. You may obtain
 # a copy of the License at
@@ -29,6 +27,7 @@ import iso8601
 from oslo_config import cfg
 from oslo_serialization import msgpackutils
 from oslo_utils import timeutils
+import six
 from tooz import coordination
 
 from gnocchi import carbonara
@@ -36,7 +35,6 @@ from gnocchi import storage
 
 OPTS = [
     cfg.IntOpt('aggregation_workers_number',
-               default=None,
                help='Number of workers to run during adding new measures for '
                     'pre-aggregation needs.'),
     cfg.StrOpt('coordination_url',
@@ -48,8 +46,11 @@ OPTS = [
 LOG = logging.getLogger(__name__)
 
 
-class CarbonaraBasedStorageToozLock(object):
+class CarbonaraBasedStorage(storage.StorageDriver):
+    MEASURE_PREFIX = "measure"
+
     def __init__(self, conf):
+        super(CarbonaraBasedStorage, self).__init__(conf)
         self.coord = coordination.get_coordinator(
             conf.coordination_url,
             str(uuid.uuid4()).encode('ascii'))
@@ -78,58 +79,82 @@ class CarbonaraBasedStorageToozLock(object):
     def stop(self):
         self.coord.stop()
 
-    def __call__(self, metric_id):
+    def _lock(self, metric_id):
         lock_name = b"gnocchi-" + str(metric_id).encode('ascii')
         return self.coord.get_lock(lock_name)
 
-
-class CarbonaraBasedStorage(storage.StorageDriver):
-    MEASURE_PREFIX = "measure"
-
-    def __init__(self, conf):
-        super(CarbonaraBasedStorage, self).__init__(conf)
-        self.executor = futures.ThreadPoolExecutor(
-            max_workers=(conf.aggregation_workers_number or
-                         multiprocessing.cpu_count()))
-
     @staticmethod
-    def _create_metric_container(metric, archive_policy):
-        pass
-
-    @staticmethod
-    def _lock(metric):
+    def _get_measures(metric, timestamp_key, aggregation, granularity):
         raise NotImplementedError
 
     @staticmethod
-    def _get_measures(metric, aggregation):
+    def _get_unaggregated_timeserie(metric):
         raise NotImplementedError
 
     @staticmethod
-    def _store_metric_measures(metric, aggregation, data):
+    def _store_unaggregated_timeserie(metric, data):
+        raise NotImplementedError
+
+    @staticmethod
+    def _store_metric_measures(metric, aggregation, granularity, data):
+        raise NotImplementedError
+
+    @staticmethod
+    def _list_split_keys_for_metric(metric, aggregation, granularity):
         raise NotImplementedError
 
     def get_measures(self, metric, from_timestamp=None, to_timestamp=None,
                      aggregation='mean', granularity=None):
         super(CarbonaraBasedStorage, self).get_measures(
             metric, from_timestamp, to_timestamp, aggregation)
-        archive = self._get_measures_archive(metric, aggregation)
-        return [(timestamp.replace(tzinfo=iso8601.iso8601.UTC), r, v)
-                for timestamp, r, v
-                in archive.fetch(from_timestamp, to_timestamp)
-                if granularity is None or r == granularity]
-
-    @staticmethod
-    def _log_data_corruption(metric, aggregation):
-        LOG.error("Data are corrupted for metric %(metric)s and aggregation "
-                  "%(aggregation)s, recreating an empty timeserie." %
-                  dict(metric=metric.id, aggregation=aggregation))
-
-    def _get_measures_archive(self, metric, aggregation):
-        try:
-            contents = self._get_measures(metric, aggregation)
-        except (storage.MetricDoesNotExist, storage.AggregationDoesNotExist):
-            ts = None
+        if granularity is None:
+            agg_timeseries = self._map_in_thread(
+                self._get_measures_timeserie,
+                ((metric, aggregation, ap.granularity,
+                  from_timestamp, to_timestamp)
+                 for ap in reversed(metric.archive_policy.definition)))
         else:
+            agg_timeseries = [self._get_measures_timeserie(
+                metric, aggregation, granularity,
+                from_timestamp, to_timestamp)]
+        return [(timestamp.replace(tzinfo=iso8601.iso8601.UTC), r, v)
+                for ts in agg_timeseries
+                for timestamp, r, v in ts.fetch(from_timestamp, to_timestamp)]
+
+    def _get_measures_and_unserialize(self, metric, key,
+                                      aggregation, granularity):
+        data = self._get_measures(metric, key, aggregation, granularity)
+        try:
+            return carbonara.TimeSerie.unserialize(data)
+        except ValueError:
+                LOG.error("Data corruption detected for %s "
+                          "aggregated `%s' timeserie, granularity `%s' "
+                          "around time `%s', ignoring."
+                          % (metric.id, aggregation, granularity, key))
+
+    def _get_measures_timeserie(self, metric,
+                                aggregation, granularity,
+                                from_timestamp=None, to_timestamp=None):
+
+        # Find the number of point
+        for d in metric.archive_policy.definition:
+            if d.granularity == granularity:
+                points = d.points
+                break
+        else:
+            raise storage.GranularityDoesNotExist(metric, granularity)
+
+        all_keys = None
+        try:
+            all_keys = self._list_split_keys_for_metric(
+                metric, aggregation, granularity)
+        except storage.MetricDoesNotExist:
+            # This can happen if it's an old metric with a TimeSerieArchive
+            all_keys = None
+
+        if not all_keys:
+            # It does not mean we have no data: it can be an old metric with a
+            # TimeSerieArchive.
             try:
                 data = self._get_metric_archive(metric, aggregation)
             except (storage.MetricDoesNotExist,
@@ -311,12 +336,8 @@ class CarbonaraBasedStorage(storage.StorageDriver):
             # NOTE(jd): We need to lock the metric otherwise we might delete
             # measures that another worker might be processing. Deleting
             # measurement files under its feet is not nice!
-            lock = self._lock(metric_id)
-            lock.acquire(blocking=sync)
-            try:
+            with self._lock(metric_id)(blocking=sync):
                 self._delete_unprocessed_measures_for_metric_id(metric_id)
-            finally:
-                lock.release()
         for metric in metrics:
             lock = self._lock(metric.id)
             agg_methods = list(metric.archive_policy.aggregation_methods)
@@ -336,8 +357,10 @@ class CarbonaraBasedStorage(storage.StorageDriver):
 
                         try:
                             with timeutils.StopWatch() as sw:
-                                raw_measures = self._get_measures(metric,
-                                                                  'none')
+                                raw_measures = (
+                                    self._get_unaggregated_timeserie(
+                                        metric)
+                                )
                                 LOG.debug(
                                     "Retrieve unaggregated measures "
                                     "for %s in %.2fs"
@@ -349,20 +372,21 @@ class CarbonaraBasedStorage(storage.StorageDriver):
                                 # Created in the mean time, do not worry
                                 pass
                             ts = None
-                        except storage.AggregationDoesNotExist:
-                            ts = None
                         else:
                             try:
                                 ts = carbonara.BoundTimeSerie.unserialize(
                                     raw_measures)
                             except ValueError:
                                 ts = None
-                                self._log_data_corruption(metric, "none")
+                                LOG.error(
+                                    "Data corruption detected for %s "
+                                    "unaggregated timeserie, "
+                                    "recreating an empty one."
+                                    % metric.id)
 
                         if ts is None:
                             # This is the first time we treat measures for this
-                            # metric, or data are corrupted,
-                            # create a new one
+                            # metric, or data are corrupted, create a new one
                             mbs = metric.archive_policy.max_block_size
                             ts = carbonara.BoundTimeSerie(
                                 block_size=mbs,
@@ -385,8 +409,8 @@ class CarbonaraBasedStorage(storage.StorageDriver):
                                 "in %.2f seconds"
                                 % (metric.id, len(measures), sw.elapsed()))
 
-                        self._store_metric_measures(metric, 'none',
-                                                    ts.serialize())
+                        self._store_unaggregated_timeserie(metric,
+                                                           ts.serialize())
                 except Exception:
                     if sync:
                         raise
@@ -396,46 +420,84 @@ class CarbonaraBasedStorage(storage.StorageDriver):
 
     def get_cross_metric_measures(self, metrics, from_timestamp=None,
                                   to_timestamp=None, aggregation='mean',
+                                  granularity=None,
                                   needed_overlap=100.0):
         super(CarbonaraBasedStorage, self).get_cross_metric_measures(
-            metrics, from_timestamp, to_timestamp, aggregation, needed_overlap)
+            metrics, from_timestamp, to_timestamp,
+            aggregation, granularity, needed_overlap)
 
-        tss = self._map_in_thread(self._get_measures_archive,
-                                  [(metric, aggregation)
-                                   for metric in metrics])
+        if granularity is None:
+            granularities = (
+                definition.granularity
+                for metric in metrics
+                for definition in metric.archive_policy.definition
+            )
+            granularities_in_common = [
+                g
+                for g, occurence in six.iteritems(
+                    collections.Counter(granularities))
+                if occurence == len(metrics)
+            ]
+
+            if not granularities_in_common:
+                raise storage.MetricUnaggregatable(
+                    metrics, 'No granularity match')
+        else:
+            granularities_in_common = [granularity]
+
+        tss = self._map_in_thread(self._get_measures_timeserie,
+                                  [(metric, aggregation, g,
+                                    from_timestamp, to_timestamp)
+                                   for metric in metrics
+                                   for g in granularities_in_common])
         try:
             return [(timestamp.replace(tzinfo=iso8601.iso8601.UTC), r, v)
                     for timestamp, r, v
-                    in carbonara.TimeSerieArchive.aggregated(
+                    in carbonara.AggregatedTimeSerie.aggregated(
                         tss, from_timestamp, to_timestamp,
                         aggregation, needed_overlap)]
         except carbonara.UnAggregableTimeseries as e:
             raise storage.MetricUnaggregatable(metrics, e.reason)
 
-    def _find_measure(self, metric, aggregation, predicate,
+    def _find_measure(self, metric, aggregation, granularity, predicate,
                       from_timestamp, to_timestamp):
-        timeserie = self._get_measures_archive(metric, aggregation)
+        timeserie = self._get_measures_timeserie(
+            metric, aggregation, granularity,
+            from_timestamp, to_timestamp)
         values = timeserie.fetch(from_timestamp, to_timestamp)
         return {metric:
                 [(timestamp.replace(tzinfo=iso8601.iso8601.UTC),
-                  granularity, value)
-                 for timestamp, granularity, value in values
+                  g, value)
+                 for timestamp, g, value in values
                  if predicate(value)]}
 
+    # TODO(jd) Add granularity parameter here and in the REST API
+    # rather than fetching all granularities
     def search_value(self, metrics, query, from_timestamp=None,
                      to_timestamp=None, aggregation='mean'):
-        result = {}
         predicate = storage.MeasureQuery(query)
-        results = self._map_in_thread(self._find_measure,
-                                      [(metric, aggregation, predicate,
-                                        from_timestamp, to_timestamp)
-                                       for metric in metrics])
+        results = self._map_in_thread(
+            self._find_measure,
+            [(metric, aggregation,
+              ap.granularity, predicate,
+              from_timestamp, to_timestamp)
+             for metric in metrics
+             for ap in metric.archive_policy.definition])
+        result = collections.defaultdict(list)
         for r in results:
-            result.update(r)
+            for metric, metric_result in six.iteritems(r):
+                result[metric].extend(metric_result)
+
+        # Sort the result
+        for metric, r in six.iteritems(result):
+            # Sort by timestamp asc, granularity desc
+            r.sort(key=lambda t: (t[0], - t[1]))
+
         return result
 
     def _map_in_thread(self, method, list_of_args):
-        # We use 'list' to iterate all threads here to raise the first
-        # exception now , not much choice
-        return list(self.executor.map(lambda args: method(*args),
-                                      list_of_args))
+        with futures.ThreadPoolExecutor(
+                max_workers=self.aggregation_workers_number) as executor:
+            # We use 'list' to iterate all threads here to raise the first
+            # exception now, not much choice
+            return list(executor.map(lambda args: method(*args), list_of_args))

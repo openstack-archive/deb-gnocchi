@@ -22,7 +22,10 @@ from oslotest import base
 from oslotest import mockpatch
 import six
 from stevedore import extension
-from swiftclient import exceptions as swexc
+try:
+    from swiftclient import exceptions as swexc
+except ImportError:
+    swexc = None
 from testtools import testcase
 from tooz import coordination
 
@@ -122,8 +125,7 @@ class FakeRadosModule(object):
         def get_xattrs(self, key):
             if key not in self.kvs:
                 raise FakeRadosModule.ObjectNotFound
-            return iter((k, v) for k, v in
-                        self.kvs_xattrs.get(key, {}).items())
+            return six.iteritems(self.kvs_xattrs.get(key, {}).copy())
 
         def set_xattr(self, key, attr, value):
             self._ensure_key_exists(key)
@@ -201,7 +203,7 @@ class FakeSwiftClient(object):
 
         files = []
         directories = set()
-        for k, v in six.iteritems(container):
+        for k, v in six.iteritems(container.copy()):
             if path and not k.startswith(path):
                 continue
 
@@ -342,15 +344,11 @@ class TestCase(base.BaseTestCase):
 
     def setUp(self):
         super(TestCase, self).setUp()
-        self.conf = service.prepare_service([])
+        self.conf = service.prepare_service([],
+                                            default_config_files=[])
         self.conf.set_override('policy_file',
                                self.path_get('etc/gnocchi/policy.json'),
                                group="oslo_policy")
-
-        self.conf.set_override(
-            'url',
-            os.environ.get("GNOCCHI_TEST_INDEXER_URL", "null://"),
-            'indexer')
 
         self.index = indexer.get_driver(self.conf)
         self.index.connect()
@@ -386,9 +384,10 @@ class TestCase(base.BaseTestCase):
                 except indexer.ArchivePolicyAlreadyExists:
                     pass
 
-        self.useFixture(mockpatch.Patch(
-            'swiftclient.client.Connection',
-            FakeSwiftClient))
+        if swexc:
+            self.useFixture(mockpatch.Patch(
+                'swiftclient.client.Connection',
+                FakeSwiftClient))
 
         self.useFixture(mockpatch.Patch('gnocchi.storage.ceph.rados',
                                         FakeRadosModule()))
@@ -419,6 +418,12 @@ class TestCase(base.BaseTestCase):
                                        'storage')
 
         self.storage = storage.get_driver(self.conf)
+        # NOTE(jd) Do not upgrade the storage. We don't really need the storage
+        # upgrade for now, and the code that upgrade from pre-1.3
+        # (TimeSerieArchive) uses a lot of parallel lock, which makes tooz
+        # explodes because MySQL does not support that many connections in real
+        # life.
+        # self.storage.upgrade(self.index)
 
         self.mgr = extension.ExtensionManager('gnocchi.aggregates',
                                               invoke_on_load=True)
