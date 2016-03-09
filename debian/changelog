@@ -1,6 +1,7 @@
 gnocchi (2.0.2-1) experimental; urgency=medium
 
   * New upstream release.
+  * Fixed (build-)depends for this release.
 
  -- Thomas Goirand <zigo@debian.org>  Wed, 09 Mar 2016 14:05:32 +0100
 
