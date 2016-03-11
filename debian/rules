@@ -56,7 +56,7 @@ ifeq (,$(findstring nocheck, $(DEB_BUILD_OPTIONS)))
 		export PGHOST=$$PG_MYTMPDIR ; \
 		chmod +x debian/start_pg.sh ; \
 		debian/start_pg.sh $$PG_MYTMPDIR ; \
-		export GNOCCHI_TEST_INDEXER_URL="postgresql:///template1?host=$$PG_MYTMPDIR&port=9823" ; \
+		export GNOCCHI_INDEXER_URL="postgresql:///template1?host=$$PG_MYTMPDIR&port=9823" ; \
 		export GNOCCHI_TEST_STORAGE_DRIVER=file ; \
 		echo "===> Testing with python$$i (python$$PYMAJOR)" ; \
 		rm -rf .testrepository ; \
