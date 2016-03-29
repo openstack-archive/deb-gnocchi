@@ -1,8 +1,14 @@
-gnocchi (2.0.2-2) UNRELEASED; urgency=medium
+gnocchi (2.0.2-3) experimental; urgency=medium
 
   * Added missing (build-)depends: python-lz4.
 
- -- Thomas Goirand <zigo@debian.org>  Mon, 14 Mar 2016 14:12:42 +0100
+ -- Thomas Goirand <zigo@debian.org>  Tue, 29 Mar 2016 13:29:28 +0000
+
+gnocchi (2.0.2-2) experimental; urgency=medium
+
+  * Do not use Keystone admin auth token to register API endpoints.
+
+ -- Thomas Goirand <zigo@debian.org>  Tue, 29 Mar 2016 13:10:49 +0000
 
 gnocchi (2.0.2-1) experimental; urgency=medium
 
