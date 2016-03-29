@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: glance\n"
 "Report-Msgid-Bugs-To: gnocchi@packages.debian.org\n"
-"POT-Creation-Date: 2015-11-25 09:24+0000\n"
+"POT-Creation-Date: 2016-03-29 13:10+0000\n"
 "PO-Revision-Date: 2014-01-09 10:35+0100\n"
 "Last-Translator: Martin Bagge / brother <brother@bsnet.se>\n"
 "Language-Team: Swedish <debian-l10n-swedish@lists.debian.org>\n"
@@ -169,9 +169,14 @@ msgstr ""
 #. Type: boolean
 #. Description
 #: ../gnocchi-api.templates:2001
+#, fuzzy
+#| msgid ""
+#| "Note that you will need to have an up and running Keystone server on "
+#| "which to connect using the Keystone authentication token."
 msgid ""
 "Note that you will need to have an up and running Keystone server on which "
-"to connect using the Keystone authentication token."
+"to connect using a known admin project name, admin username and password. "
+"The admin auth token is not used anymore."
 msgstr "OBS. Du behöver ha en fungerande keystone-server att ansluta till."
 
 #. Type: string
@@ -190,41 +195,54 @@ msgstr ""
 "Ange IP-adressen till din Keystone-server så att glance-api kan kontakta "
 "Keystone för att lägga till Gnocchi-tjänsten som en ändpunkt."
 
-#. Type: password
-#. Description
-#: ../gnocchi-api.templates:4001
-msgid "Keystone authentication token:"
-msgstr "Autetiseringsvärde för Keystone:"
-
-#. Type: password
+#. Type: string
 #. Description
 #: ../gnocchi-api.templates:4001
 #, fuzzy
-#| msgid ""
-#| "To configure its endpoint in Keystone, glance-api needs the Keystone "
-#| "authentication token."
+#| msgid "Keystone authentication token:"
+msgid "Keystone admin name:"
+msgstr "Autetiseringsvärde för Keystone:"
+
+#. Type: string
+#. Description
+#. Type: string
+#. Description
+#. Type: password
+#. Description
+#: ../gnocchi-api.templates:4001 ../gnocchi-api.templates:5001
+#: ../gnocchi-api.templates:6001
 msgid ""
-"To configure its endpoint in Keystone, gnocchi-api needs the Keystone "
-"authentication token."
+"To register the service endpoint, this package needs to know the Admin "
+"login, name, project name, and password to the Keystone server."
 msgstr ""
-"För att lägga till ändpunkt i Keystone behöver glance-api ett "
-"autentiseringsvärde för Keystone."
 
 #. Type: string
 #. Description
 #: ../gnocchi-api.templates:5001
+msgid "Keystone admin project name:"
+msgstr ""
+
+#. Type: password
+#. Description
+#: ../gnocchi-api.templates:6001
+msgid "Keystone admin password:"
+msgstr ""
+
+#. Type: string
+#. Description
+#: ../gnocchi-api.templates:7001
 msgid "Gnocchi endpoint IP address:"
 msgstr "IP-adress för Gnocchi-ändpunkt:"
 
 #. Type: string
 #. Description
-#: ../gnocchi-api.templates:5001
+#: ../gnocchi-api.templates:7001
 msgid "Please enter the IP address that will be used to contact Gnocchi."
 msgstr "Ange den IP-adress som ska användas för att kontakta Gnocchi."
 
 #. Type: string
 #. Description
-#: ../gnocchi-api.templates:5001
+#: ../gnocchi-api.templates:7001
 msgid ""
 "This IP address should be accessible from the clients that will use this "
 "service, so if you are installing a public cloud, this should be a public IP "
@@ -236,13 +254,13 @@ msgstr ""
 
 #. Type: string
 #. Description
-#: ../gnocchi-api.templates:6001
+#: ../gnocchi-api.templates:8001
 msgid "Name of the region to register:"
 msgstr "Regionnamn:"
 
 #. Type: string
 #. Description
-#: ../gnocchi-api.templates:6001
+#: ../gnocchi-api.templates:8001
 msgid ""
 "OpenStack supports using availability zones, with each region representing a "
 "location. Please enter the zone that you wish to use when registering the "
@@ -250,3 +268,14 @@ msgid ""
 msgstr ""
 "OpenStack kan användas med tillgänglighetszoner. Varje region representerar "
 "en plats. Ange zonen som ska användas när ändpunkten registreras."
+
+#, fuzzy
+#~| msgid ""
+#~| "To configure its endpoint in Keystone, glance-api needs the Keystone "
+#~| "authentication token."
+#~ msgid ""
+#~ "To configure its endpoint in Keystone, gnocchi-api needs the Keystone "
+#~ "authentication token."
+#~ msgstr ""
+#~ "För att lägga till ändpunkt i Keystone behöver glance-api ett "
+#~ "autentiseringsvärde för Keystone."
