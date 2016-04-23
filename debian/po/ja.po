@@ -9,7 +9,7 @@ msgstr ""
 "Project-Id-Version: glance\n"
 "Report-Msgid-Bugs-To: gnocchi@packages.debian.org\n"
 "POT-Creation-Date: 2016-03-29 13:10+0000\n"
-"PO-Revision-Date: 2016-03-17 10:06+0900\n"
+"PO-Revision-Date: 2016-04-07 13:15+0900\n"
 "Last-Translator: Takuma Yamada <tyamada@takumayamada.com>\n"
 "Language-Team: Japanese <debian-japanese@lists.debian.org>\n"
 "Language: ja\n"
@@ -113,8 +113,8 @@ msgid ""
 " * a username and password to access the database."
 msgstr ""
 " * 使用するデータベースの種類\n"
-" * データベースサーバのホスト名 (そのサーバは、このマシンからの\n"
-"   TCP 接続を許可する必要があります)\n"
+" * データベースサーバのホスト名 (そのサーバは、このマシンからのTCP 接続を\n"
+"   許可する必要があります)\n"
 " * データベースにアクセスするためのユーザ名とパスワード"
 
 #. Type: boolean
@@ -134,14 +134,14 @@ msgid ""
 "You can change this setting later on by running \"dpkg-reconfigure -plow "
 "gnocchi-common\"."
 msgstr ""
-"「dpkg-reconfigure -plow gnocchi-common」の実行により、この設定を後で変更する"
-"ことができます。"
+"この設定は、後で \"dpkg-reconfigure -plow gnocchi-common\" を実行することで変"
+"更できます。"
 
 #. Type: boolean
 #. Description
 #: ../gnocchi-api.templates:2001
 msgid "Register Gnocchi in the Keystone endpoint catalog?"
-msgstr "Gnocchi を Keystone のエンドポイントのカタログに登録しますか?"
+msgstr "Gnocchi を Keystone のエンドポイントカタログに登録しますか?"
 
 #. Type: boolean
 #. Description
@@ -151,14 +151,13 @@ msgid ""
 "accessible. This is done using \"keystone service-create\" and \"keystone "
 "endpoint-create\". This can be done automatically now."
 msgstr ""
-"各 OpenStack のサービス (各 API ) がアクセスできるようにするために登録する必"
-"要があります。これは「keystone service-create」と「keystone endpoint-create」"
-"を使用して行われます。これは自動的に行うことができます。"
+"各 OpenStack サービス (各 API) は、アクセス可能にするために登録する必要があり"
+"ます。\"keystone service-create\" と \"keystone endpoint-create\" を使って登"
+"録することができます。ここで自動的に行うことができます。"
 
 #. Type: boolean
 #. Description
 #: ../gnocchi-api.templates:2001
-#, fuzzy
 #| msgid ""
 #| "Note that you will need to have an up and running Keystone server on "
 #| "which to connect using the Keystone authentication token."
@@ -167,8 +166,9 @@ msgid ""
 "to connect using a known admin project name, admin username and password. "
 "The admin auth token is not used anymore."
 msgstr ""
-"Keystone 認証トークンを使って接続するには、Keystone サーバの起動および実行が"
-"必要になりますので注意してください。"
+"既知の管理プロジェクト名、管理者のユーザ名とパスワードを使用して接続するに"
+"は、Keystone サーバの起動および実行が必要になりますので注意してください。管理"
+"者認証トークンはもう使用されていません。"
 
 #. Type: string
 #. Description
@@ -183,17 +183,16 @@ msgid ""
 "Please enter the IP address of the Keystone server, so that gnocchi-api can "
 "contact Keystone to do the Gnocchi service and endpoint creation."
 msgstr ""
-"Keystone サーバの IP アドレスを入力してください。その結果 gnocchi-api は、"
-"Gnocchi サービスやエンドポイント作成を行うために Keystone へ通信することがで"
-"きます。"
+"Keystone サーバの IP アドレスを入力してください。それにより gnocchi-api は "
+"Keystone と通信し、Gnocchi サービスやエンドポイントの作成ができるようになりま"
+"す。"
 
 #. Type: string
 #. Description
 #: ../gnocchi-api.templates:4001
-#, fuzzy
 #| msgid "Keystone authentication token:"
 msgid "Keystone admin name:"
-msgstr "Keystone 認証トークン:"
+msgstr "Keystone 管理者名:"
 
 #. Type: string
 #. Description
@@ -207,18 +206,21 @@ msgid ""
 "To register the service endpoint, this package needs to know the Admin "
 "login, name, project name, and password to the Keystone server."
 msgstr ""
+"サービスのエンドポイントを登録するには、このパッケージが Keystone サーバへの"
+"管理者ログイン、名前、プロジェクト名、およびパスワードを知っている必要があり"
+"ます。"
 
 #. Type: string
 #. Description
 #: ../gnocchi-api.templates:5001
 msgid "Keystone admin project name:"
-msgstr ""
+msgstr "Keystone 管理プロジェクト名:"
 
 #. Type: password
 #. Description
 #: ../gnocchi-api.templates:6001
 msgid "Keystone admin password:"
-msgstr ""
+msgstr "Keystone 管理者パスワード:"
 
 #. Type: string
 #. Description
@@ -241,8 +243,8 @@ msgid ""
 "address."
 msgstr ""
 "この IP アドレスは、このサービスを利用するクライアントからアクセス可能でなけ"
-"ればならないので、パブリッククラウドをインストールしている場合、これはパブ"
-"リック IP アドレスでなければなりません。"
+"ればなりません。パブリッククラウドをインストールしている場合は、パブリック "
+"IP アドレスにする必要があります。"
 
 #. Type: string
 #. Description

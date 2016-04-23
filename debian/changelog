@@ -1,8 +1,12 @@
-gnocchi (2.0.2-5) UNRELEASED; urgency=medium
+gnocchi (2.0.2-6) UNRELEASED; urgency=medium
 
+  [ Ondřej Nový ]
   * Standards-Version is 3.9.8 now (no change)
 
- -- Ondřej Nový <novy@ondrej.org>  Sat, 09 Apr 2016 19:22:44 +0200
+  [ Thomas Goirand ]
+  * Added Japanese debconf templates translation update (Closes: #820769).
+
+ -- Thomas Goirand <zigo@debian.org>  Sat, 23 Apr 2016 18:54:09 +0200
 
 gnocchi (2.0.2-4) unstable; urgency=medium
 
