@@ -10,6 +10,7 @@ gnocchi (2.0.2-6) UNRELEASED; urgency=medium
 
   [ Ondřej Nový ]
   * d/rules: Removed UPSTREAM_GIT with default value
+  * d/copyright: Changed source URL to https protocol
 
  -- Thomas Goirand <zigo@debian.org>  Sat, 23 Apr 2016 18:54:09 +0200
 
