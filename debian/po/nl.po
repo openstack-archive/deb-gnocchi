@@ -6,10 +6,10 @@
 #
 msgid ""
 msgstr ""
-"Project-Id-Version: gnocchi_1.3.0-4\n"
+"Project-Id-Version: gnocchi_2.0.2-4\n"
 "Report-Msgid-Bugs-To: gnocchi@packages.debian.org\n"
 "POT-Creation-Date: 2016-03-29 13:10+0000\n"
-"PO-Revision-Date: 2016-01-12 16:31+0100\n"
+"PO-Revision-Date: 2016-04-24 12:07+0200\n"
 "Last-Translator: Frans Spiesschaert <Frans.Spiesschaert@yucom.be>\n"
 "Language-Team: Debian Dutch l10n Team <debian-l10n-dutch@lists.debian.org>\n"
 "Language: nl\n"
@@ -33,8 +33,8 @@ msgid ""
 "Typically this is also the hostname of the OpenStack Identity Service "
 "(Keystone)."
 msgstr ""
-"Geef de computernaam van de authenticatieserver voor Gnocchi. Meestal is dit "
-"ook de computernaam van de OpenStack identiteitsserver (Keystone)."
+"Geef de computernaam van de authenticatieserver voor Gnocchi op. Meestal is "
+"dit ook de computernaam van de OpenStack Identiteitsdienst (Keystone)."
 
 #. Type: string
 #. Description
@@ -47,7 +47,7 @@ msgstr ""
 #. locataire ("tenant")
 #: ../gnocchi-common.templates:3001
 msgid "Authentication server tenant name:"
-msgstr "Naam van de clientruimte (tenant) op de authenticatieserver:"
+msgstr "Naam van de cliëntruimte (tenant) op de authenticatieserver:"
 
 #. Type: string
 #. Description
@@ -61,38 +61,39 @@ msgstr "Naam van de clientruimte (tenant) op de authenticatieserver:"
 #: ../gnocchi-common.templates:3001
 msgid "Please specify the authentication server tenant name."
 msgstr ""
-"Gelieve de naam te vermelden van de clientruimte (tenant) op de "
-"authenticatieserver"
+"Geef de naam op van de cliëntruimte (tenant) op de authenticatieserver."
 
 #. Type: string
 #. Description
 #: ../gnocchi-common.templates:4001
 msgid "Authentication server username:"
-msgstr "Gebruikersnaam voor de authenticatieserver:"
+msgstr "Gebruikersnaam op de authenticatieserver:"
 
 #. Type: string
 #. Description
 #: ../gnocchi-common.templates:4001
 msgid "Please specify the username to use with the authentication server."
-msgstr "Geef de gebruikersnaam op voor de authenticatieserver."
+msgstr ""
+"Geef de gebruikersnaam op die op de authenticatieserver gebruikt moet worden."
 
 #. Type: password
 #. Description
 #: ../gnocchi-common.templates:5001
 msgid "Authentication server password:"
-msgstr "Wachtwoord voor de authenticatieserver:"
+msgstr "Wachtwoord op de authenticatieserver:"
 
 #. Type: password
 #. Description
 #: ../gnocchi-common.templates:5001
 msgid "Please specify the password to use with the authentication server."
-msgstr "Geef het wachtwoord op voor de authenticatieserver."
+msgstr ""
+"Geef het wachtwoord op dat op de authenticatieserver gebruikt moet worden."
 
 #. Type: boolean
 #. Description
 #: ../gnocchi-common.templates:6001
 msgid "Set up a database for Gnocchi?"
-msgstr "Een database voor Gnocchi opzetten?"
+msgstr "Een database opzetten voor Gnocchi?"
 
 #. Type: boolean
 #. Description
@@ -101,8 +102,8 @@ msgid ""
 "No database has been set up for Gnocchi to use. Before continuing, you "
 "should make sure you have the following information:"
 msgstr ""
-"Er werd geen database opgezet voor het register van Gnocchi noch voor de API "
-"van Gnocchi. Voor u doorgaat moet u beschikken over de volgende informatie:"
+"Er werd geen database opgezet om door Gnocchi gebruikt te worden. Voor u "
+"doorgaat moet u beschikken over de volgende informatie:"
 
 #. Type: boolean
 #. Description
@@ -114,10 +115,11 @@ msgid ""
 "   machine);\n"
 " * a username and password to access the database."
 msgstr ""
-" * het type database dat u wenst te gebruiken;\n"
-" * de computernaam van de databeseserver (die server moet\n"
-"   TCP-verbindingen vanaf deze computer accepteren);\n"
-" * een gebruikersnaam en wachtwoord voor toegang tot de database."
+" * het soort database dat u wilt gebruiken;\n"
+" * de computernaam van de databaseserver (die server moet\n"
+"   TCP-verbindingen vanaf deze computer toestaan);\n"
+" * een gebruikersnaam en een wachtwoord om toegang te krijgen tot de "
+"database."
 
 #. Type: boolean
 #. Description
@@ -136,14 +138,14 @@ msgid ""
 "You can change this setting later on by running \"dpkg-reconfigure -plow "
 "gnocchi-common\"."
 msgstr ""
-"U kunt deze instelling later wijzigen met het commando \"dpkg-reconfigure -"
-"plow gnocchi-common\"."
+"U kunt deze instelling later wijzigen door het uitvoeren van \"dpkg-"
+"reconfigure -plow gnocchi-common\"."
 
 #. Type: boolean
 #. Description
 #: ../gnocchi-api.templates:2001
 msgid "Register Gnocchi in the Keystone endpoint catalog?"
-msgstr "Gnocchi registreren in de catalogus van toegangspunten van keystone?"
+msgstr "Gnocchi opnemen in de catalogus van Keystone-toegangspunten?"
 
 #. Type: boolean
 #. Description
@@ -153,14 +155,13 @@ msgid ""
 "accessible. This is done using \"keystone service-create\" and \"keystone "
 "endpoint-create\". This can be done automatically now."
 msgstr ""
-"Elke OpenStackdienst (elke API) moet geregistreerd worden om toegankelijk te "
-"zijn. Dit gebeurt aan de hand van \"keystone service-create\" en \"keystone "
-"endpoint-create\". Dit kan nu automatisch gedaan worden."
+"Elke dienst van OpenStack (elke API) moet geregistreerd staan om "
+"toegankelijk te zijn. Dit gebeurt met de opdrachten \"keystone service-create"
+"\" en \"keystone endpoint-create\". Dit kan nu automatisch uitgevoerd worden."
 
 #. Type: boolean
 #. Description
 #: ../gnocchi-api.templates:2001
-#, fuzzy
 #| msgid ""
 #| "Note that you will need to have an up and running Keystone server on "
 #| "which to connect using the Keystone authentication token."
@@ -169,9 +170,10 @@ msgid ""
 "to connect using a known admin project name, admin username and password. "
 "The admin auth token is not used anymore."
 msgstr ""
-"Merk op dat u hiervoor een volledig werkende keystone-server nodig heeft, "
-"waarmee een verbinding gemaakt wordt met behulp van het authenticatiebewijs "
-"voor Keystone."
+"Merk op dat u een functionerende Keystone-server moet hebben om er een "
+"verbinding mee te maken met behulp van een gekende beheerdersprojectnaam, "
+"beheerdersgebruikersnaam en wachtwoord. Het beheerderslegitimatiebewijs "
+"wordt niet langer gebruikt."
 
 #. Type: string
 #. Description
@@ -186,17 +188,15 @@ msgid ""
 "Please enter the IP address of the Keystone server, so that gnocchi-api can "
 "contact Keystone to do the Gnocchi service and endpoint creation."
 msgstr ""
-"Gelieve het IP-adres van de Keystone-server op te geven, zodat glance-api "
-"met Keystone kan verbinden om de Gnocchi-service en het troegangspunt aan te "
-"maken."
+"Geef het IP-adres van de Keystone-server op, zodat glance-api Keystone kan "
+"contacteren om de Gnocchidienst en het toegangspunt aan te maken."
 
 #. Type: string
 #. Description
 #: ../gnocchi-api.templates:4001
-#, fuzzy
 #| msgid "Keystone authentication token:"
 msgid "Keystone admin name:"
-msgstr "Authenticatiebewijs voor Keystone:"
+msgstr "Naam van de beheerder voor Keystone:"
 
 #. Type: string
 #. Description
@@ -210,32 +210,34 @@ msgid ""
 "To register the service endpoint, this package needs to know the Admin "
 "login, name, project name, and password to the Keystone server."
 msgstr ""
+"Om het toegangspunt van de dienst te registreren moet dit pakket de "
+"inloggegevens voor de Keystone-server van de beheerder kennen, naam, "
+"projectnaam en wachtwoord."
 
 #. Type: string
 #. Description
 #: ../gnocchi-api.templates:5001
 msgid "Keystone admin project name:"
-msgstr ""
+msgstr "Naam van het project van de beheerder voor Keystone:"
 
 #. Type: password
 #. Description
 #: ../gnocchi-api.templates:6001
 msgid "Keystone admin password:"
-msgstr ""
+msgstr "Wachtwoord van de beheerder voor Keystone:"
 
 #. Type: string
 #. Description
 #: ../gnocchi-api.templates:7001
 msgid "Gnocchi endpoint IP address:"
-msgstr "IP-adres van het toegangspunt voor Gnocchi:"
+msgstr "IP-adres van het toegangspunt van Gnocchi:"
 
 #. Type: string
 #. Description
 #: ../gnocchi-api.templates:7001
 msgid "Please enter the IP address that will be used to contact Gnocchi."
 msgstr ""
-"Gelieve het IP-adres in te voeren dat gebruikt zal worden om contact te "
-"maken met Gnocchi."
+"Geef het IP-adres op dat gebruikt zal worden voor het contact met Gnocchi."
 
 #. Type: string
 #. Description
@@ -245,15 +247,15 @@ msgid ""
 "service, so if you are installing a public cloud, this should be a public IP "
 "address."
 msgstr ""
-"Dit IP-adres moet bereikbaar zijn voor de clients die van deze service "
-"gebruik zullen maken. Indien u een openbare cloud installeert, moet dit dus "
-"een algemeen bereikbaar IP-adres zijn."
+"Dit IP-adres moet bereikbaar zijn voor de clients die deze dienst zullen "
+"gebruiken. Indien u een openbare cloud installeert, moet dit dus een "
+"algemeen bereikbaar IP-adres zijn."
 
 #. Type: string
 #. Description
 #: ../gnocchi-api.templates:8001
 msgid "Name of the region to register:"
-msgstr "Naam van de te registreren regio:"
+msgstr "Naam van de registratieregio:"
 
 #. Type: string
 #. Description
@@ -263,7 +265,7 @@ msgid ""
 "location. Please enter the zone that you wish to use when registering the "
 "endpoint."
 msgstr ""
-"Openstack ondersteunt het gebruik van zones van beschikbaarheid, waarbij "
+"OpenStack ondersteunt het gebruik van zones van beschikbaarheid, waarbij "
 "elke regio een locatie vertegenwoordigt. Geef aan welke zone u wenst te "
 "gebruiken bij het registreren van het toegangspunt."
 

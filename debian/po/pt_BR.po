@@ -1,14 +1,14 @@
-# Debconf translations for glance.
-# Copyright (C) 2012 THE glance'S COPYRIGHT HOLDER
-# This file is distributed under the same license as the glance package.
-# Adriano Rafael Gomes <adrianorg@arg.eti.br>, 2012-2014.
+# Debconf translations for gnocchi.
+# Copyright (C) 2012 THE gnocchi'S COPYRIGHT HOLDER
+# This file is distributed under the same license as the gnocchi package.
+# Adriano Rafael Gomes <adrianorg@arg.eti.br>, 2012-2016.
 #
 msgid ""
 msgstr ""
-"Project-Id-Version: glance 2014.1.2-1\n"
+"Project-Id-Version: gnocchi\n"
 "Report-Msgid-Bugs-To: gnocchi@packages.debian.org\n"
 "POT-Creation-Date: 2016-03-29 13:10+0000\n"
-"PO-Revision-Date: 2014-09-04 08:49-0300\n"
+"PO-Revision-Date: 2016-04-30 16:34-0300\n"
 "Last-Translator: Adriano Rafael Gomes <adrianorg@arg.eti.br>\n"
 "Language-Team: Brazilian Portuguese <debian-l10n-portuguese@lists.debian."
 "org>\n"
@@ -99,18 +99,12 @@ msgstr "Configurar um banco de dados para o Gnocchi?"
 #. Type: boolean
 #. Description
 #: ../gnocchi-common.templates:6001
-#, fuzzy
-#| msgid ""
-#| "No database has been set up for glance-registry or glance-api to use. "
-#| "Before continuing, you should make sure you have the following "
-#| "information:"
 msgid ""
 "No database has been set up for Gnocchi to use. Before continuing, you "
 "should make sure you have the following information:"
 msgstr ""
-"Nenhum banco de dados foi configurado para o glance-registry ou para o "
-"glance-api utilizar. Antes de continuar, você deve se certificar que você "
-"tem as seguintes informações:"
+"Nenhum banco de dados foi configurado para o Gnocchi utilizar. Antes de "
+"continuar, você deve se certificar que você tem as seguintes informações:"
 
 #. Type: boolean
 #. Description
@@ -140,16 +134,12 @@ msgstr ""
 #. Type: boolean
 #. Description
 #: ../gnocchi-common.templates:6001
-#, fuzzy
-#| msgid ""
-#| "You can change this setting later on by running \"dpkg-reconfigure -plow "
-#| "glance-common\"."
 msgid ""
 "You can change this setting later on by running \"dpkg-reconfigure -plow "
 "gnocchi-common\"."
 msgstr ""
 "Você pode mudar essa configuração depois, executando \"dpkg-reconfigure -"
-"plow glance-common\"."
+"plow gnocchi-common\"."
 
 #. Type: boolean
 #. Description
@@ -172,17 +162,15 @@ msgstr ""
 #. Type: boolean
 #. Description
 #: ../gnocchi-api.templates:2001
-#, fuzzy
-#| msgid ""
-#| "Note that you will need to have an up and running Keystone server on "
-#| "which to connect using the Keystone authentication token."
 msgid ""
 "Note that you will need to have an up and running Keystone server on which "
 "to connect using a known admin project name, admin username and password. "
 "The admin auth token is not used anymore."
 msgstr ""
 "Note que você precisará ter um servidor Keystone configurado e em execução "
-"no qual conectar usando o \"token\" de autenticação do Keystone."
+"no qual conectar usando um nome de projeto de admin, nome de usuário de "
+"admin e senha conhecidos. O \"token\" de autenticação do admin não é mais "
+"usado."
 
 #. Type: string
 #. Description
@@ -204,10 +192,8 @@ msgstr ""
 #. Type: string
 #. Description
 #: ../gnocchi-api.templates:4001
-#, fuzzy
-#| msgid "Keystone authentication token:"
 msgid "Keystone admin name:"
-msgstr "\"Token\" de autenticação Keystone:"
+msgstr "Nome de admin do Keystone:"
 
 #. Type: string
 #. Description
@@ -221,18 +207,20 @@ msgid ""
 "To register the service endpoint, this package needs to know the Admin "
 "login, name, project name, and password to the Keystone server."
 msgstr ""
+"Para registrar o \"endpoint\" do serviço, esse pacote precisa saber o login, "
+"nome, nome do projeto e senha do Admin no servidor Keystone."
 
 #. Type: string
 #. Description
 #: ../gnocchi-api.templates:5001
 msgid "Keystone admin project name:"
-msgstr ""
+msgstr "Nome do projeto admin no Keystone:"
 
 #. Type: password
 #. Description
 #: ../gnocchi-api.templates:6001
 msgid "Keystone admin password:"
-msgstr ""
+msgstr "Senha do admin no Keystone:"
 
 #. Type: string
 #. Description
@@ -277,7 +265,6 @@ msgstr ""
 "representando uma localidade. Por favor, informe a zona que você deseja usar "
 "ao registrar o \"endpoint\"."
 
-#, fuzzy
 #~| msgid ""
 #~| "To configure its endpoint in Keystone, glance-api needs the Keystone "
 #~| "authentication token."
@@ -285,5 +272,5 @@ msgstr ""
 #~ "To configure its endpoint in Keystone, gnocchi-api needs the Keystone "
 #~ "authentication token."
 #~ msgstr ""
-#~ "Para configurar o seu \"endpoint\" no Keystone, o glance-api precisa do "
+#~ "Para configurar o seu \"endpoint\" no Keystone, o gnocchi-api precisa do "
 #~ "\"token\" de autenticação do Keystone."
