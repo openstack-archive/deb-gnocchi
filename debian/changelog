@@ -8,6 +8,9 @@ gnocchi (2.0.2-6) UNRELEASED; urgency=medium
   * Updated Dutch debconf templates (Closes: #823439).
   * Updated Brazilian Portuguese debconf templates (Closes: #824292).
 
+  [ Ondřej Nový ]
+  * d/rules: Removed UPSTREAM_GIT with default value
+
  -- Thomas Goirand <zigo@debian.org>  Sat, 23 Apr 2016 18:54:09 +0200
 
 gnocchi (2.0.2-4) unstable; urgency=medium
