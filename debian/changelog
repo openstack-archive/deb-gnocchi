@@ -1,3 +1,9 @@
+gnocchi (2.0.2-6) unstable; urgency=medium
+
+  * Fixed section to be net instead of python (Closes: #825364).
+
+ -- Thomas Goirand <zigo@debian.org>  Thu, 02 Jun 2016 07:16:10 +0000
+
 gnocchi (2.0.2-5) unstable; urgency=medium
 
   [ Ondřej Nový ]

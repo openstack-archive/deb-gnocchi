@@ -1,5 +1,5 @@
 Source: gnocchi
-Section: python
+Section: net
 Priority: optional
 Maintainer: PKG OpenStack <openstack-devel@lists.alioth.debian.org>
 Uploaders: Thomas Goirand <zigo@debian.org>,
@@ -73,6 +73,7 @@ Vcs-Git: https://anonscm.debian.org/git/openstack/python-gnocchi.git
 Homepage: https://github.com/openstack/gnocchi
 
 Package: python-gnocchi
+Section: python
 Architecture: all
 Depends: alembic (>= 0.7.6),
          python-concurrent.futures (>= 2.1.6),
