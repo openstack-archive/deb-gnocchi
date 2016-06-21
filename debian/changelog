@@ -1,3 +1,9 @@
+gnocchi (2.0.2-7) UNRELEASED; urgency=medium
+
+  * d/watch: Fixed upstream URL
+
+ -- Ondřej Nový <onovy@debian.org>  Tue, 21 Jun 2016 13:00:49 +0200
+
 gnocchi (2.0.2-6) unstable; urgency=medium
 
   * Fixed section to be net instead of python (Closes: #825364).
