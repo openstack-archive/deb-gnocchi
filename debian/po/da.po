@@ -1,11 +1,11 @@
-# Danish translation glance.
-# Copyright (C) 2014 glance & nedenstående oversættere.
-# This file is distributed under the same license as the glance package.
-# Joe Hansen (joedalton2@yahoo.dk), 2012, 2013, 2014.
+# Danish translation gnocchi.
+# Copyright (C) 2016 gnocchi & nedenstående oversættere.
+# This file is distributed under the same license as the gnocchi package.
+# Joe Hansen (joedalton2@yahoo.dk), 2012, 2013, 2014, 2016.
 #
 msgid ""
 msgstr ""
-"Project-Id-Version: glance\n"
+"Project-Id-Version: gnocchi\n"
 "Report-Msgid-Bugs-To: gnocchi@packages.debian.org\n"
 "POT-Creation-Date: 2016-03-29 13:10+0000\n"
 "PO-Revision-Date: 2014-02-22 12:42+0000\n"
@@ -92,18 +92,12 @@ msgstr "Opsæt en database for Gnocchi?"
 #. Type: boolean
 #. Description
 #: ../gnocchi-common.templates:6001
-#, fuzzy
-#| msgid ""
-#| "No database has been set up for glance-registry or glance-api to use. "
-#| "Before continuing, you should make sure you have the following "
-#| "information:"
 msgid ""
 "No database has been set up for Gnocchi to use. Before continuing, you "
 "should make sure you have the following information:"
 msgstr ""
-"Ingen database er blevet opsat som glance-registry eller glance-api kan "
-"bruge. Før du fortsætter, skal du sikre dig, at du har den følgende "
-"information:"
+"Ingen database er blevet opsat som Gnocchi kan bruge. Før du fortsætter, "
+"skal du sikre dig, at du har den følgende information:"
 
 #. Type: boolean
 #. Description
@@ -133,16 +127,12 @@ msgstr ""
 #. Type: boolean
 #. Description
 #: ../gnocchi-common.templates:6001
-#, fuzzy
-#| msgid ""
-#| "You can change this setting later on by running \"dpkg-reconfigure -plow "
-#| "glance-common\"."
 msgid ""
 "You can change this setting later on by running \"dpkg-reconfigure -plow "
 "gnocchi-common\"."
 msgstr ""
 "Du kan ændre denne indstilling senere ved at køre »dpkg-reconfigure -plow "
-"glance-common«."
+"gnocchi-common«."
 
 #. Type: boolean
 #. Description
@@ -165,17 +155,14 @@ msgstr ""
 #. Type: boolean
 #. Description
 #: ../gnocchi-api.templates:2001
-#, fuzzy
-#| msgid ""
-#| "Note that you will need to have an up and running Keystone server on "
-#| "which to connect using the Keystone authentication token."
 msgid ""
 "Note that you will need to have an up and running Keystone server on which "
 "to connect using a known admin project name, admin username and password. "
 "The admin auth token is not used anymore."
 msgstr ""
 "Bemærk at du skal have en op og kørende Keystoneserver, som du skal forbinde "
-"til med Keystones godkendelsessymbol."
+"til via et kendt administratorprojektnavn, administratorbrugernavn og "
+"adgangskode. Administratorens godkendelsessymbol bruges ikke længere."
 
 #. Type: string
 #. Description
@@ -196,10 +183,8 @@ msgstr ""
 #. Type: string
 #. Description
 #: ../gnocchi-api.templates:4001
-#, fuzzy
-#| msgid "Keystone authentication token:"
 msgid "Keystone admin name:"
-msgstr "Godkendelsessymbol for Keystone:"
+msgstr "Administratornavn for Keystone:"
 
 #. Type: string
 #. Description
@@ -213,18 +198,21 @@ msgid ""
 "To register the service endpoint, this package needs to know the Admin "
 "login, name, project name, and password to the Keystone server."
 msgstr ""
+"For at registrere tjenesteslutpunkt skal denne pakke kende til "
+"administratorlogind'et, navn, projektnavn og adgangskode for "
+"Keystoneserveren."
 
 #. Type: string
 #. Description
 #: ../gnocchi-api.templates:5001
 msgid "Keystone admin project name:"
-msgstr ""
+msgstr "Projektnavn for Keystoneadministratoren:"
 
 #. Type: password
 #. Description
 #: ../gnocchi-api.templates:6001
 msgid "Keystone admin password:"
-msgstr ""
+msgstr "Adgangskode for Keystoneadministratoren:"
 
 #. Type: string
 #. Description
@@ -269,13 +257,3 @@ msgstr ""
 "repræsenterer et sted. Indtast venligst zonen du ønsker at bruge, når "
 "slutpunktet registreres."
 
-#, fuzzy
-#~| msgid ""
-#~| "To configure its endpoint in Keystone, glance-api needs the Keystone "
-#~| "authentication token."
-#~ msgid ""
-#~ "To configure its endpoint in Keystone, gnocchi-api needs the Keystone "
-#~ "authentication token."
-#~ msgstr ""
-#~ "For at konfigurere dets slutpunkt i Keystone, kræver glance-api Keystones "
-#~ "godkendelsessymbol."

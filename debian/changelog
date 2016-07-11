@@ -1,8 +1,12 @@
-gnocchi (2.0.2-7) UNRELEASED; urgency=medium
+gnocchi (2.0.2-8) UNRELEASED; urgency=medium
 
+  [ Ondřej Nový ]
   * d/watch: Fixed upstream URL
 
- -- Ondřej Nový <onovy@debian.org>  Tue, 21 Jun 2016 13:00:49 +0200
+  [ Thomas Goirand ]
+  * Updated Danish translation of the debconf templates (Closes: #830650).
+
+ -- Thomas Goirand <zigo@debian.org>  Mon, 11 Jul 2016 14:36:26 +0200
 
 gnocchi (2.0.2-6) unstable; urgency=medium
 
