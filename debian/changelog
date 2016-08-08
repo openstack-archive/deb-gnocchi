@@ -1,4 +1,4 @@
-gnocchi (2.0.2-9) UNRELEASED; urgency=medium
+gnocchi (2.0.2-7) unstable; urgency=medium
 
   [ Ondřej Nový ]
   * d/watch: Fixed upstream URL
@@ -7,7 +7,7 @@ gnocchi (2.0.2-9) UNRELEASED; urgency=medium
   * Updated Danish translation of the debconf templates (Closes: #830650).
   * Now using gnocchi-upgrade, and not gnocchi-dbsync (Closes: #832792).
 
- -- Thomas Goirand <zigo@debian.org>  Mon, 08 Aug 2016 14:19:38 +0200
+ -- Thomas Goirand <zigo@debian.org>  Mon, 08 Aug 2016 12:21:06 +0000
 
 gnocchi (2.0.2-6) unstable; urgency=medium
 
