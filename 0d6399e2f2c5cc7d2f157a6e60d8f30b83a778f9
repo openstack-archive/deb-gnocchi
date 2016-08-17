@@ -1,0 +1,9 @@
+Code-Review+2: Julien Danjou <julien@danjou.info>
+Workflow+1: Julien Danjou <julien@danjou.info>
+Code-Review+2: Mehdi Abaakouk (sileht) <sileht@redhat.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Mon, 14 Dec 2015 10:54:25 +0000
+Reviewed-on: https://review.openstack.org/255769
+Project: openstack/deb-gnocchi
+Branch: refs/heads/stable/1.3
