@@ -13,7 +13,9 @@
 # WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 # License for the specific language governing permissions and limitations
 # under the License.
+import errno
 import functools
+import json
 import os
 import uuid
 
@@ -21,7 +23,7 @@ import fixtures
 from oslotest import base
 from oslotest import mockpatch
 import six
-from stevedore import extension
+from six.moves.urllib.parse import unquote
 try:
     from swiftclient import exceptions as swexc
 except ImportError:
@@ -57,13 +59,53 @@ def _skip_decorator(func):
 
 
 class FakeRadosModule(object):
+    class OpCtx(object):
+        def __enter__(self):
+            self.ops = []
+            return self
+
+        def __exit__(self, *args, **kwargs):
+            pass
+
+    WriteOpCtx = ReadOpCtx = OpCtx
+
+    class OmapIterator(object):
+        class OpRetCode(object):
+            def __init__(self):
+                self.ret = 0
+
+            def __eq__(self, other):
+                return self.ret == other
+
+        def __init__(self, start_filter, prefix_filter, number):
+            self.start_filter = start_filter
+            self.prefix_filter = prefix_filter
+            self.number = number
+            self.data = {}
+            self.op_ret = self.OpRetCode()
+
+        def set_data(self, data):
+            if not data:
+                self.op_ret.ret = errno.ENOENT
+            else:
+                self.data = data
+
+        def __iter__(self):
+            # NOTE(sileht): we use only the prefix for now
+            return ((k, v) for k, v in self.data.items()
+                    if k.startswith(self.prefix_filter))
+
+    LIBRADOS_OPERATION_BALANCE_READS = 1
+    LIBRADOS_OPERATION_SKIPRWLOCKS = 16
+
     class ObjectNotFound(Exception):
         pass
 
     class ioctx(object):
-        def __init__(self, kvs, kvs_xattrs):
+        def __init__(self, kvs, kvs_xattrs, kvs_omaps):
             self.kvs = kvs
             self.kvs_xattrs = kvs_xattrs
+            self.kvs_omaps = kvs_omaps
             self.librados = self
             self.io = self
 
@@ -78,21 +120,7 @@ class FakeRadosModule(object):
             if key not in self.kvs:
                 self.kvs[key] = ""
                 self.kvs_xattrs[key] = {}
-
-        def rados_lock_exclusive(self, ctx, name, lock, locker, desc, timeval,
-                                 flags):
-            # Locking a not existing object create an empty one
-            # so, do the same in test
-            key = name.value.decode('ascii')
-            self._ensure_key_exists(key)
-            return 0
-
-        def rados_unlock(self, ctx, name, lock, locker):
-            # Locking a not existing object create an empty one
-            # so, do the same in test
-            key = name.value.decode('ascii')
-            self._ensure_key_exists(key)
-            return 0
+                self.kvs_omaps[key] = {}
 
         @staticmethod
         def close():
@@ -108,6 +136,18 @@ class FakeRadosModule(object):
             self._ensure_key_exists(key)
             self.kvs[key] = value
 
+        def write(self, key, value, offset):
+            self._validate_key(key)
+            try:
+                current = self.kvs[key]
+            except KeyError:
+                current = b""
+            if len(current) < offset:
+                current += b'\x00' * (offset - len(current))
+            self.kvs[key] = (
+                current[:offset] + value + current[offset + len(value):]
+            )
+
         def stat(self, key):
             self._validate_key(key)
             if key not in self.kvs:
@@ -121,6 +161,33 @@ class FakeRadosModule(object):
                 raise FakeRadosModule.ObjectNotFound
             else:
                 return self.kvs[key][offset:offset+length]
+
+        def operate_read_op(self, op, key, flag=0):
+            for op in op.ops:
+                op(key)
+
+        def get_omap_vals(self, op, start_filter, prefix_filter, number):
+            oi = FakeRadosModule.OmapIterator(start_filter, prefix_filter,
+                                              number)
+            op.ops.append(lambda oid: oi.set_data(self.kvs_omaps.get(oid)))
+            return oi, oi.op_ret
+
+        def operate_write_op(self, op, key, flags=0):
+            for op in op.ops:
+                op(key)
+
+        def set_omap(self, op,  keys, values):
+            def add(oid):
+                self._ensure_key_exists(oid)
+                omaps = self.kvs_omaps.setdefault(oid, {})
+                omaps.update(dict(zip(keys, values)))
+            op.ops.append(add)
+
+        def remove_omap_keys(self, op,  keys):
+            def rm(oid):
+                for key in keys:
+                    del self.kvs_omaps[oid][key]
+            op.ops.append(rm)
 
         def get_xattrs(self, key):
             if key not in self.kvs:
@@ -143,16 +210,23 @@ class FakeRadosModule(object):
                 raise FakeRadosModule.ObjectNotFound
             del self.kvs[key]
             del self.kvs_xattrs[key]
+            del self.kvs_omaps[key]
 
         def aio_remove(self, key):
             self._validate_key(key)
             self.kvs.pop(key, None)
             self.kvs_xattrs.pop(key, None)
+            self.kvs_omaps.pop(key, None)
+
+        @staticmethod
+        def aio_flush():
+            pass
 
     class FakeRados(object):
-        def __init__(self, kvs, kvs_xattrs):
+        def __init__(self, kvs, kvs_xattrs, kvs_omaps):
             self.kvs = kvs
             self.kvs_xattrs = kvs_xattrs
+            self.kvs_omaps = kvs_omaps
 
         @staticmethod
         def connect():
@@ -163,14 +237,17 @@ class FakeRadosModule(object):
             pass
 
         def open_ioctx(self, pool):
-            return FakeRadosModule.ioctx(self.kvs, self.kvs_xattrs)
+            return FakeRadosModule.ioctx(self.kvs, self.kvs_xattrs,
+                                         self.kvs_omaps)
 
     def __init__(self):
         self.kvs = {}
         self.kvs_xattrs = {}
+        self.kvs_omaps = {}
 
     def Rados(self, *args, **kwargs):
-        return FakeRadosModule.FakeRados(self.kvs, self.kvs_xattrs)
+        return FakeRadosModule.FakeRados(self.kvs, self.kvs_xattrs,
+                                         self.kvs_omaps)
 
     @staticmethod
     def run_in_thread(method, args):
@@ -270,56 +347,36 @@ class FakeSwiftClient(object):
             raise swexc.ClientException("No such container",
                                         http_status=404)
 
+    def post_account(self, headers, query_string=None, data=None,
+                     response_dict=None):
+        if query_string == 'bulk-delete':
+            resp = {'Response Status': '200 OK',
+                    'Response Body': '',
+                    'Number Deleted': 0,
+                    'Number Not Found': 0}
+            if response_dict is not None:
+                response_dict['status'] = 200
+            if data:
+                for path in data.splitlines():
+                    try:
+                        __, container, obj = (unquote(path.decode('utf8'))
+                                              .split('/', 2))
+                        del self.kvs[container][obj]
+                        resp['Number Deleted'] += 1
+                    except KeyError:
+                        resp['Number Not Found'] += 1
+            return {}, json.dumps(resp).encode('utf-8')
+
+        if response_dict is not None:
+            response_dict['status'] = 204
+
+        return {}, None
+
 
 @six.add_metaclass(SkipNotImplementedMeta)
 class TestCase(base.BaseTestCase):
 
     ARCHIVE_POLICIES = {
-        'low': archive_policy.ArchivePolicy(
-            "low",
-            0,
-            [
-                # 5 minutes resolution for an hour
-                archive_policy.ArchivePolicyItem(
-                    granularity=300, points=12),
-                # 1 hour resolution for a day
-                archive_policy.ArchivePolicyItem(
-                    granularity=3600, points=24),
-                # 1 day resolution for a month
-                archive_policy.ArchivePolicyItem(
-                    granularity=3600 * 24, points=30),
-            ],
-        ),
-        'medium': archive_policy.ArchivePolicy(
-            "medium",
-            0,
-            [
-                # 1 minute resolution for an hour
-                archive_policy.ArchivePolicyItem(
-                    granularity=60, points=60),
-                # 1 hour resolution for a week
-                archive_policy.ArchivePolicyItem(
-                    granularity=3600, points=7 * 24),
-                # 1 day resolution for a year
-                archive_policy.ArchivePolicyItem(
-                    granularity=3600 * 24, points=365),
-            ],
-        ),
-        'high': archive_policy.ArchivePolicy(
-            "high",
-            0,
-            [
-                # 1 second resolution for a day
-                archive_policy.ArchivePolicyItem(
-                    granularity=1, points=3600 * 24),
-                # 1 minute resolution for a month
-                archive_policy.ArchivePolicyItem(
-                    granularity=60, points=60 * 24 * 30),
-                # 1 hour resolution for a year
-                archive_policy.ArchivePolicyItem(
-                    granularity=3600, points=365 * 24),
-            ],
-        ),
         'no_granularity_match': archive_policy.ArchivePolicy(
             "no_granularity_match",
             0,
@@ -342,8 +399,9 @@ class TestCase(base.BaseTestCase):
             return os.path.join(root, project_file)
         return root
 
-    def setUp(self):
-        super(TestCase, self).setUp()
+    @classmethod
+    def setUpClass(self):
+        super(TestCase, self).setUpClass()
         self.conf = service.prepare_service([],
                                             default_config_files=[])
         self.conf.set_override('policy_file',
@@ -362,28 +420,29 @@ class TestCase(base.BaseTestCase):
             self.conf.storage.coordination_url,
             str(uuid.uuid4()).encode('ascii'))
 
-        self.coord.start()
+        self.coord.start(start_heart=True)
 
         with self.coord.get_lock(b"gnocchi-tests-db-lock"):
-            # Force upgrading using Alembic rather than creating the
-            # database from scratch so we are sure we don't miss anything
-            # in the Alembic upgrades. We have a test to check that
-            # upgrades == create but it misses things such as custom CHECK
-            # constraints.
-            self.index.upgrade(nocreate=True)
+            self.index.upgrade()
 
         self.coord.stop()
 
-        self.archive_policies = self.ARCHIVE_POLICIES
-        # Used in gnocchi.gendoc
-        if not getattr(self, "skip_archive_policies_creation", False):
-            for name, ap in six.iteritems(self.ARCHIVE_POLICIES):
-                # Create basic archive policies
-                try:
-                    self.index.create_archive_policy(ap)
-                except indexer.ArchivePolicyAlreadyExists:
-                    pass
+        self.archive_policies = self.ARCHIVE_POLICIES.copy()
+        self.archive_policies.update(archive_policy.DEFAULT_ARCHIVE_POLICIES)
+        for name, ap in six.iteritems(self.archive_policies):
+            # Create basic archive policies
+            try:
+                self.index.create_archive_policy(ap)
+            except indexer.ArchivePolicyAlreadyExists:
+                pass
 
+        self.conf.set_override(
+            'driver',
+            os.getenv("GNOCCHI_TEST_STORAGE_DRIVER", "file"),
+            'storage')
+
+    def setUp(self):
+        super(TestCase, self).setUp()
         if swexc:
             self.useFixture(mockpatch.Patch(
                 'swiftclient.client.Connection',
@@ -392,30 +451,11 @@ class TestCase(base.BaseTestCase):
         self.useFixture(mockpatch.Patch('gnocchi.storage.ceph.rados',
                                         FakeRadosModule()))
 
-        self.conf.set_override(
-            'driver',
-            os.getenv("GNOCCHI_TEST_STORAGE_DRIVER", "null"),
-            'storage')
-
         if self.conf.storage.driver == 'file':
             tempdir = self.useFixture(fixtures.TempDir())
             self.conf.set_override('file_basepath',
                                    tempdir.path,
                                    'storage')
-        elif self.conf.storage.driver == 'influxdb':
-            self.conf.set_override('influxdb_block_until_data_ingested', True,
-                                   'storage')
-            self.conf.set_override('influxdb_database', 'test', 'storage')
-            self.conf.set_override('influxdb_password', 'root', 'storage')
-            self.conf.set_override('influxdb_port',
-                                   os.getenv("GNOCCHI_TEST_INFLUXDB_PORT",
-                                             51234), 'storage')
-            # NOTE(ityaptin) Creating unique database for every test may cause
-            # tests failing by timeout, but in may be useful in some cases
-            if os.getenv("GNOCCHI_TEST_INFLUXDB_UNIQUE_DATABASES"):
-                self.conf.set_override("influxdb_database",
-                                       "gnocchi_%s" % uuid.uuid4().hex,
-                                       'storage')
 
         self.storage = storage.get_driver(self.conf)
         # NOTE(jd) Do not upgrade the storage. We don't really need the storage
@@ -424,10 +464,6 @@ class TestCase(base.BaseTestCase):
         # explodes because MySQL does not support that many connections in real
         # life.
         # self.storage.upgrade(self.index)
-
-        self.mgr = extension.ExtensionManager('gnocchi.aggregates',
-                                              invoke_on_load=True)
-        self.custom_agg = dict((x.name, x.obj) for x in self.mgr)
 
     def tearDown(self):
         self.index.disconnect()

@@ -1,5 +1,5 @@
 # -*- encoding: utf-8 -*-
-#
+
 # Licensed under the Apache License, Version 2.0 (the "License"); you may
 # not use this file except in compliance with the License. You may obtain
 # a copy of the License at
@@ -17,34 +17,22 @@ from __future__ import absolute_import
 import sqlalchemy
 import sqlalchemy_utils
 
-
-class Image(object):
-    name = sqlalchemy.Column(sqlalchemy.String(255), nullable=False)
-    container_format = sqlalchemy.Column(sqlalchemy.String(255),
-                                         nullable=False)
-    disk_format = sqlalchemy.Column(sqlalchemy.String(255), nullable=False)
+from gnocchi import resource_type
 
 
-class Instance(object):
-    flavor_id = sqlalchemy.Column(sqlalchemy.String(255), nullable=False)
-    image_ref = sqlalchemy.Column(sqlalchemy.String(255))
-    host = sqlalchemy.Column(sqlalchemy.String(255), nullable=False)
-    display_name = sqlalchemy.Column(sqlalchemy.String(255), nullable=False)
-    server_group = sqlalchemy.Column(sqlalchemy.String(255))
+class StringSchema(resource_type.StringSchema):
+    @property
+    def satype(self):
+        return sqlalchemy.String(self.max_length)
 
 
-class InstanceDisk(object):
-    name = sqlalchemy.Column(sqlalchemy.String(255), nullable=False)
-    instance_id = sqlalchemy.Column(sqlalchemy_utils.UUIDType(),
-                                    nullable=False)
+class UUIDSchema(resource_type.UUIDSchema):
+    satype = sqlalchemy_utils.UUIDType()
 
 
-class InstanceNetworkInterface(object):
-    __tablename__ = 'instance_net_int'
-    name = sqlalchemy.Column(sqlalchemy.String(255), nullable=False)
-    instance_id = sqlalchemy.Column(sqlalchemy_utils.UUIDType(),
-                                    nullable=False)
+class NumberSchema(resource_type.NumberSchema):
+    satype = sqlalchemy.Float(53)
 
 
-class Volume(object):
-    display_name = sqlalchemy.Column(sqlalchemy.String(255), nullable=True)
+class BoolSchema(resource_type.BoolSchema):
+    satype = sqlalchemy.Boolean

@@ -24,6 +24,8 @@ import uuid
 
 from keystonemiddleware import fixture as ksm_fixture
 import mock
+from oslo_config import cfg
+from oslo_middleware import cors
 from oslo_utils import timeutils
 import six
 from stevedore import extension
@@ -52,6 +54,8 @@ class TestingApp(webtest.TestApp):
     VALID_TOKEN_2 = str(uuid.uuid4())
     USER_ID_2 = str(uuid.uuid4())
     PROJECT_ID_2 = str(uuid.uuid4())
+
+    INVALID_TOKEN = str(uuid.uuid4())
 
     def __init__(self, *args, **kwargs):
         self.auth = kwargs.pop('auth')
@@ -83,11 +87,35 @@ class TestingApp(webtest.TestApp):
         finally:
             self.token = old_token
 
+    @contextlib.contextmanager
+    def use_invalid_token(self):
+        if not self.auth:
+            raise testcase.TestSkipped("No auth enabled")
+        old_token = self.token
+        self.token = self.INVALID_TOKEN
+        try:
+            yield
+        finally:
+            self.token = old_token
+
+    @contextlib.contextmanager
+    def use_no_token(self):
+        # We don't skip for no self.auth to ensure
+        # some test returns the same thing with auth or not
+        old_token = self.token
+        self.token = None
+        try:
+            yield
+        finally:
+            self.token = old_token
+
     def do_request(self, req, *args, **kwargs):
-        if self.auth:
+        if self.auth and self.token is not None:
             req.headers['X-Auth-Token'] = self.token
         response = super(TestingApp, self).do_request(req, *args, **kwargs)
-        self.storage.process_background_tasks(self.indexer, sync=True)
+        metrics = self.storage.list_metric_with_measures_to_process(
+            None, None, full=True)
+        self.storage.process_background_tasks(self.indexer, metrics, sync=True)
         return response
 
 
@@ -103,6 +131,13 @@ class RestTest(tests_base.TestCase, testscenarios.TestWithScenarios):
         self.conf.set_override('paste_config',
                                self.path_get('etc/gnocchi/api-paste.ini'),
                                group="api")
+
+        # NOTE(sileht): This is not concurrency safe, but only this tests file
+        # deal with cors, so we are fine. set_override don't work because
+        # cors group doesn't yet exists, and we the CORS middleware is created
+        # it register the option and directly copy value of all configurations
+        # options making impossible to override them properly...
+        cfg.set_defaults(cors.CORS_OPTS, allowed_origin="http://foobar.com")
 
         self.auth_token_fixture = self.useFixture(
             ksm_fixture.AuthTokenFixture())
@@ -138,6 +173,40 @@ class RestTest(tests_base.TestCase, testscenarios.TestWithScenarios):
                               indexer=self.index,
                               auth=self.auth)
 
+    # NOTE(jd) Used at least by docs
+    @staticmethod
+    def runTest():
+        pass
+
+
+class RootTest(RestTest):
+
+    def _do_test_cors(self):
+        resp = self.app.options(
+            "/v1/status",
+            headers={'Origin': 'http://notallowed.com',
+                     'Access-Control-Request-Method': 'GET'},
+            status=200)
+        headers = dict(resp.headers)
+        self.assertNotIn("Access-Control-Allow-Origin", headers)
+        self.assertNotIn("Access-Control-Allow-Methods", headers)
+        resp = self.app.options(
+            "/v1/status",
+            headers={'origin': 'http://foobar.com',
+                     'Access-Control-Request-Method': 'GET'},
+            status=200)
+        headers = dict(resp.headers)
+        self.assertIn("Access-Control-Allow-Origin", headers)
+        self.assertIn("Access-Control-Allow-Methods", headers)
+
+    def test_cors_invalid_token(self):
+        with self.app.use_invalid_token():
+            self._do_test_cors()
+
+    def test_cors_no_token(self):
+        with self.app.use_no_token():
+            self._do_test_cors()
+
     def test_deserialize_force_json(self):
         with self.app.use_admin_user():
             self.app.post(
@@ -147,31 +216,28 @@ class RestTest(tests_base.TestCase, testscenarios.TestWithScenarios):
 
     def test_capabilities(self):
         custom_agg = extension.Extension('test_aggregation', None, None, None)
-        aggregation_methods = set(
-            archive_policy.ArchivePolicy.VALID_AGGREGATION_METHODS)
-        aggregation_methods.add('test_aggregation')
         mgr = extension.ExtensionManager.make_test_instance(
             [custom_agg], 'gnocchi.aggregates')
+        aggregation_methods = set(
+            archive_policy.ArchivePolicy.VALID_AGGREGATION_METHODS)
 
         with mock.patch.object(extension, 'ExtensionManager',
                                return_value=mgr):
-            result = self.app.get("/v1/capabilities")
+            result = self.app.get("/v1/capabilities").json
             self.assertEqual(
                 sorted(aggregation_methods),
-                sorted(json.loads(result.text)['aggregation_methods']))
+                sorted(result['aggregation_methods']))
+            self.assertEqual(
+                ['test_aggregation'],
+                result['dynamic_aggregation_methods'])
 
     def test_status(self):
         with self.app.use_admin_user():
             r = self.app.get("/v1/status")
         status = json.loads(r.text)
-        # We are sure this is empty because we call process_measures() each
-        # time we do a REST request in this TestingApp.
-        self.assertEqual({},
-                         status['storage']['measures_to_process'])
-
-    @staticmethod
-    def runTest():
-        pass
+        self.assertIsInstance(status['storage']['measures_to_process'], dict)
+        self.assertIsInstance(status['storage']['summary']['metrics'], int)
+        self.assertIsInstance(status['storage']['summary']['measures'], int)
 
 
 class ArchivePolicyTest(RestTest):
@@ -321,11 +387,6 @@ class MetricTest(RestTest):
                 status=403)
 
     def test_add_measures_back_window(self):
-        if self.conf.storage.driver == 'influxdb':
-            # FIXME(sileht): Won't pass with influxdb because it doesn't
-            # check archive policy
-            raise testcase.TestSkipped("InfluxDB issue")
-
         ap_name = str(uuid.uuid4())
         with self.app.use_admin_user():
             self.app.post_json(
@@ -503,12 +564,17 @@ class MetricTest(RestTest):
         self.assertIn('Invalid value for window', ret.text)
 
     def test_get_resource_missing_named_metric_measure_aggregation(self):
+        mgr = self.index.get_resource_type_schema()
+        resource_type = str(uuid.uuid4())
+        self.index.create_resource_type(
+            mgr.resource_type_from_dict(resource_type, {
+                "server_group": {"type": "string",
+                                 "min_length": 1,
+                                 "max_length": 40,
+                                 "required": True}
+            }, 'creating'))
+
         attributes = {
-            "started_at": "2014-01-03T02:02:02.000000",
-            "host": "foo",
-            "image_ref": "imageref!",
-            "flavor_id": "123",
-            "display_name": "myinstance",
             "server_group": str(uuid.uuid4()),
         }
         result = self.app.post_json("/v1/metric",
@@ -531,16 +597,17 @@ class MetricTest(RestTest):
 
         attributes['id'] = str(uuid.uuid4())
         attributes['metrics'] = {'foo': metric1['id']}
-        self.app.post_json("/v1/resource/instance",
+        self.app.post_json("/v1/resource/" + resource_type,
                            params=attributes)
 
         attributes['id'] = str(uuid.uuid4())
         attributes['metrics'] = {'bar': metric2['id']}
-        self.app.post_json("/v1/resource/instance",
+        self.app.post_json("/v1/resource/" + resource_type,
                            params=attributes)
 
         result = self.app.post_json(
-            "/v1/aggregation/resource/instance/metric/foo?aggregation=max",
+            "/v1/aggregation/resource/%s/metric/foo?aggregation=max"
+            % resource_type,
             params={"=": {"server_group": attributes['server_group']}})
 
         measures = json.loads(result.text)
@@ -582,192 +649,19 @@ class MetricTest(RestTest):
 
 
 class ResourceTest(RestTest):
-
-    resource_scenarios = [
-        ('generic', dict(
-            attributes={
-                "started_at": "2014-01-03T02:02:02+00:00",
-                "user_id": str(uuid.uuid4()),
-                "project_id": str(uuid.uuid4()),
-            },
-            patchable_attributes={
-                "ended_at": "2014-01-03T02:02:02+00:00",
-            },
-            resource_type='generic')),
-        ('instance_disk', dict(
-            attributes={
-                "started_at": "2014-01-03T02:02:02+00:00",
-                "user_id": str(uuid.uuid4()),
-                "project_id": str(uuid.uuid4()),
-                "name": "disk-name",
-                "instance_id": str(uuid.uuid4()),
-            },
-            patchable_attributes={
-                "ended_at": "2014-01-03T02:02:02+00:00",
-                "name": "new-disk-name",
-            },
-            resource_type='instance_disk')),
-        ('instance_network_interface', dict(
-            attributes={
-                "started_at": "2014-01-03T02:02:02+00:00",
-                "user_id": str(uuid.uuid4()),
-                "project_id": str(uuid.uuid4()),
-                "name": "nic-name",
-                "instance_id": str(uuid.uuid4()),
-            },
-            patchable_attributes={
-                "ended_at": "2014-01-03T02:02:02+00:00",
-                "name": "new-nic-name",
-            },
-            resource_type='instance_network_interface')),
-        ('instance', dict(
-            attributes={
-                "started_at": "2014-01-03T02:02:02+00:00",
-                # NOTE(jd) We test this one without user_id/project_id!
-                # Just to test that use case. :)
-                "host": "foo",
-                "image_ref": "imageref!",
-                "flavor_id": "123",
-                "display_name": "myinstance",
-                "server_group": "as_group",
-            },
-            patchable_attributes={
-                "ended_at": "2014-01-03T02:02:02+00:00",
-                "host": "fooz",
-                "image_ref": "imageref!z",
-                "flavor_id": "1234",
-                "display_name": "myinstancez",
-                "server_group": "new_as_group",
-            },
-            resource_type='instance')),
-        # swift notifications contain UUID user_id
-        ('swift_account', dict(
-            attributes={
-                "started_at": "2014-01-03T02:02:02+00:00",
-                "user_id": str(uuid.uuid4()),
-                "project_id": str(uuid.uuid4()),
-            },
-            patchable_attributes={
-                "ended_at": "2014-01-03T02:02:02+00:00",
-            },
-            resource_type='swift_account')),
-        # swift pollsters contain None user_id
-        ('swift_account_none_user', dict(
-            attributes={
-                "started_at": "2014-01-03T02:02:02+00:00",
-                "user_id": None,
-                "project_id": str(uuid.uuid4()),
-            },
-            patchable_attributes={
-                "ended_at": "2014-01-03T02:02:02+00:00",
-            },
-            resource_type='swift_account')),
-        # TODO(dbelova): add tests with None project ID when we'll add kwapi,
-        # ipmi, hardware, etc. resources that are passed without project ID
-        ('volume', dict(
-            attributes={
-                "started_at": "2014-01-03T02:02:02+00:00",
-                "user_id": str(uuid.uuid4()),
-                "project_id": str(uuid.uuid4()),
-                "display_name": "test_volume",
-            },
-            patchable_attributes={
-                "ended_at": "2014-01-03T02:02:02+00:00",
-                "display_name": "myvolume",
-            },
-            resource_type='volume')),
-        ('ceph_account', dict(
-            attributes={
-                "started_at": "2014-01-03T02:02:02+00:00",
-                "user_id": str(uuid.uuid4()),
-                "project_id": str(uuid.uuid4()),
-            },
-            patchable_attributes={
-                "ended_at": "2014-01-03T02:02:02+00:00",
-            },
-            resource_type='ceph_account')),
-        ('network', dict(
-            attributes={
-                "started_at": "2014-01-03T02:02:02+00:00",
-                "user_id": str(uuid.uuid4()),
-                "project_id": str(uuid.uuid4()),
-            },
-            patchable_attributes={
-                "ended_at": "2014-01-03T02:02:02+00:00",
-            },
-            resource_type='network')),
-        ('identity', dict(
-            attributes={
-                "started_at": "2014-01-03T02:02:02+00:00",
-                "user_id": str(uuid.uuid4()),
-                "project_id": str(uuid.uuid4()),
-            },
-            patchable_attributes={
-                "ended_at": "2014-01-03T02:02:02+00:00",
-            },
-            resource_type='identity')),
-        ('ipmi', dict(
-            attributes={
-                "started_at": "2014-01-03T02:02:02+00:00",
-                "user_id": str(uuid.uuid4()),
-                "project_id": str(uuid.uuid4()),
-            },
-            patchable_attributes={
-                "ended_at": "2014-01-03T02:02:02+00:00",
-            },
-            resource_type='ipmi')),
-        ('stack', dict(
-            attributes={
-                "started_at": "2014-01-03T02:02:02+00:00",
-                "user_id": str(uuid.uuid4()),
-                "project_id": str(uuid.uuid4()),
-            },
-            patchable_attributes={
-                "ended_at": "2014-01-03T02:02:02+00:00",
-            },
-            resource_type='stack')),
-        # image pollsters contain UUID user_id
-        ('image', dict(
-            attributes={
-                "started_at": "2014-01-03T02:02:02+00:00",
-                "user_id": str(uuid.uuid4()),
-                "project_id": str(uuid.uuid4()),
-                "name": "test-image",
-                "container_format": "aki",
-                "disk_format": "aki",
-            },
-            patchable_attributes={
-                "ended_at": "2014-01-03T02:02:02+00:00",
-            },
-            resource_type='image')),
-        # image pollsters contain None user_id
-        ('image_none_user', dict(
-            attributes={
-                "started_at": "2014-01-03T02:02:02+00:00",
-                "user_id": None,
-                "project_id": str(uuid.uuid4()),
-                "name": "test-image2",
-                "container_format": "aki",
-                "disk_format": "aki",
-            },
-            patchable_attributes={
-                "ended_at": "2014-01-03T02:02:02+00:00",
-            },
-            resource_type='image')),
-    ]
-
-    @classmethod
-    def generate_scenarios(cls):
-        cls.scenarios = testscenarios.multiply_scenarios(
-            cls.scenarios,
-            cls.resource_scenarios)
-
     def setUp(self):
         super(ResourceTest, self).setUp()
-        # Copy attributes so we can modify them in each test :)
-        self.attributes = self.attributes.copy()
-        # Set an id in the attribute
-        self.attributes['id'] = str(uuid.uuid4())
+        self.attributes = {
+            "id": str(uuid.uuid4()),
+            "started_at": "2014-01-03T02:02:02+00:00",
+            "user_id": str(uuid.uuid4()),
+            "project_id": str(uuid.uuid4()),
+            "name": "my-name",
+        }
+        self.patchable_attributes = {
+            "ended_at": "2014-01-03T02:02:02+00:00",
+            "name": "new-name",
+        }
         self.resource = self.attributes.copy()
         # Set original_resource_id
         self.resource['original_resource_id'] = self.resource['id']
@@ -777,13 +671,23 @@ class ResourceTest(RestTest):
         else:
             self.resource['created_by_user_id'] = None
             self.resource['created_by_project_id'] = None
-        self.resource['type'] = self.resource_type
         self.resource['ended_at'] = None
         self.resource['metrics'] = {}
         if 'user_id' not in self.resource:
             self.resource['user_id'] = None
         if 'project_id' not in self.resource:
             self.resource['project_id'] = None
+
+        mgr = self.index.get_resource_type_schema()
+        self.resource_type = str(uuid.uuid4())
+        self.index.create_resource_type(
+            mgr.resource_type_from_dict(self.resource_type, {
+                "name": {"type": "string",
+                         "min_length": 1,
+                         "max_length": 40,
+                         "required": True}
+            }, "creating"))
+        self.resource['type'] = self.resource_type
 
     @mock.patch.object(utils, 'utcnow')
     def test_post_resource(self, utcnow):
@@ -1721,10 +1625,9 @@ class ResourceTest(RestTest):
 
         # NOTE(sileht): because the database is never cleaned between each test
         # we must ensure that the query will not match resources from an other
-        # test, to achieve this we set a different server_group on each test.
-        server_group = str(uuid.uuid4())
-        if self.resource_type == 'instance':
-            self.attributes['server_group'] = server_group
+        # test, to achieve this we set a different name on each test.
+        name = str(uuid.uuid4())
+        self.attributes['name'] = name
 
         self.attributes['metrics'] = {'foo': metric1['id']}
         self.app.post_json("/v1/resource/" + self.resource_type,
@@ -1738,14 +1641,11 @@ class ResourceTest(RestTest):
         result = self.app.post_json(
             "/v1/aggregation/resource/"
             + self.resource_type + "/metric/foo?aggregation=max",
-            params={"and":
-                    [{"=": {"server_group": server_group}},
-                     {"=": {"display_name": "myinstance"}}]},
+            params={"=": {"name": name}},
             status=400)
-        if self.resource_type == 'instance':
-            self.assertIn(b"One of the metrics being aggregated doesn't have "
-                          b"matching granularity",
-                          result.body)
+        self.assertIn(b"One of the metrics being aggregated doesn't have "
+                      b"matching granularity",
+                      result.body)
 
     def test_get_res_named_metric_measure_aggregation_nooverlap(self):
         result = self.app.post_json("/v1/metric",
@@ -1763,10 +1663,9 @@ class ResourceTest(RestTest):
 
         # NOTE(sileht): because the database is never cleaned between each test
         # we must ensure that the query will not match resources from an other
-        # test, to achieve this we set a different server_group on each test.
-        server_group = str(uuid.uuid4())
-        if self.resource_type == 'instance':
-            self.attributes['server_group'] = server_group
+        # test, to achieve this we set a different name on each test.
+        name = str(uuid.uuid4())
+        self.attributes['name'] = name
 
         self.attributes['metrics'] = {'foo': metric1['id']}
         self.app.post_json("/v1/resource/" + self.resource_type,
@@ -1780,35 +1679,25 @@ class ResourceTest(RestTest):
         result = self.app.post_json(
             "/v1/aggregation/resource/" + self.resource_type
             + "/metric/foo?aggregation=max",
-            params={"and":
-                    [{"=": {"server_group": server_group}},
-                     {"=": {"display_name": "myinstance"}}]},
+            params={"=": {"name": name}},
             expect_errors=True)
 
-        if self.resource_type == 'instance':
-            self.assertEqual(400, result.status_code, result.text)
-            self.assertIn("No overlap", result.text)
-        else:
-            self.assertEqual(400, result.status_code)
+        self.assertEqual(400, result.status_code, result.text)
+        self.assertIn("No overlap", result.text)
 
         result = self.app.post_json(
             "/v1/aggregation/resource/"
             + self.resource_type + "/metric/foo?aggregation=min"
             + "&needed_overlap=0",
-            params={"and":
-                    [{"=": {"server_group": server_group}},
-                     {"=": {"display_name": "myinstance"}}]},
+            params={"=": {"name": name}},
             expect_errors=True)
 
-        if self.resource_type == 'instance':
-            self.assertEqual(200, result.status_code, result.text)
-            measures = json.loads(result.text)
-            self.assertEqual([['2013-01-01T00:00:00+00:00', 86400.0, 8.0],
-                              ['2013-01-01T12:00:00+00:00', 3600.0, 8.0],
-                              ['2013-01-01T12:00:00+00:00', 60.0, 8.0]],
-                             measures)
-        else:
-            self.assertEqual(400, result.status_code)
+        self.assertEqual(200, result.status_code, result.text)
+        measures = json.loads(result.text)
+        self.assertEqual([['2013-01-01T00:00:00+00:00', 86400.0, 8.0],
+                          ['2013-01-01T12:00:00+00:00', 3600.0, 8.0],
+                          ['2013-01-01T12:00:00+00:00', 60.0, 8.0]],
+                         measures)
 
     def test_get_res_named_metric_measure_aggregation_nominal(self):
         result = self.app.post_json("/v1/metric",
@@ -1831,10 +1720,9 @@ class ResourceTest(RestTest):
 
         # NOTE(sileht): because the database is never cleaned between each test
         # we must ensure that the query will not match resources from an other
-        # test, to achieve this we set a different server_group on each test.
-        server_group = str(uuid.uuid4())
-        if self.resource_type == 'instance':
-            self.attributes['server_group'] = server_group
+        # test, to achieve this we set a different name on each test.
+        name = str(uuid.uuid4())
+        self.attributes['name'] = name
 
         self.attributes['metrics'] = {'foo': metric1['id']}
         self.app.post_json("/v1/resource/" + self.resource_type,
@@ -1848,54 +1736,39 @@ class ResourceTest(RestTest):
         result = self.app.post_json(
             "/v1/aggregation/resource/" + self.resource_type
             + "/metric/foo?aggregation=max",
-            params={"and":
-                    [{"=": {"server_group": server_group}},
-                     {"=": {"display_name": "myinstance"}}]},
+            params={"=": {"name": name}},
             expect_errors=True)
 
-        if self.resource_type == 'instance':
-            self.assertEqual(200, result.status_code, result.text)
-            measures = json.loads(result.text)
-            self.assertEqual([[u'2013-01-01T00:00:00+00:00', 86400.0, 16.0],
-                              [u'2013-01-01T12:00:00+00:00', 3600.0, 16.0],
-                              [u'2013-01-01T12:00:00+00:00', 60.0, 16.0]],
-                             measures)
-        else:
-            self.assertEqual(400, result.status_code)
+        self.assertEqual(200, result.status_code, result.text)
+        measures = json.loads(result.text)
+        self.assertEqual([[u'2013-01-01T00:00:00+00:00', 86400.0, 16.0],
+                          [u'2013-01-01T12:00:00+00:00', 3600.0, 16.0],
+                          [u'2013-01-01T12:00:00+00:00', 60.0, 16.0]],
+                         measures)
 
         result = self.app.post_json(
             "/v1/aggregation/resource/"
             + self.resource_type + "/metric/foo?aggregation=min",
-            params={"and":
-                    [{"=": {"server_group": server_group}},
-                     {"=": {"display_name": "myinstance"}}]},
+            params={"=": {"name": name}},
             expect_errors=True)
 
-        if self.resource_type == 'instance':
-            self.assertEqual(200, result.status_code)
-            measures = json.loads(result.text)
-            self.assertEqual([['2013-01-01T00:00:00+00:00', 86400.0, 0],
-                              ['2013-01-01T12:00:00+00:00', 3600.0, 0],
-                              ['2013-01-01T12:00:00+00:00', 60.0, 0]],
-                             measures)
-        else:
-            self.assertEqual(400, result.status_code)
+        self.assertEqual(200, result.status_code)
+        measures = json.loads(result.text)
+        self.assertEqual([['2013-01-01T00:00:00+00:00', 86400.0, 0],
+                          ['2013-01-01T12:00:00+00:00', 3600.0, 0],
+                          ['2013-01-01T12:00:00+00:00', 60.0, 0]],
+                         measures)
 
     def test_get_aggregated_measures_across_entities_no_match(self):
         result = self.app.post_json(
             "/v1/aggregation/resource/"
             + self.resource_type + "/metric/foo?aggregation=min",
-            params={"and":
-                    [{"=": {"server_group": "notexistentyet"}},
-                     {"=": {"display_name": "myinstance"}}]},
+            params={"=": {"name": "none!"}},
             expect_errors=True)
 
-        if self.resource_type == 'instance':
-            self.assertEqual(200, result.status_code)
-            measures = json.loads(result.text)
-            self.assertEqual([], measures)
-        else:
-            self.assertEqual(400, result.status_code)
+        self.assertEqual(200, result.status_code)
+        measures = json.loads(result.text)
+        self.assertEqual([], measures)
 
     def test_get_aggregated_measures_across_entities(self):
         result = self.app.post_json("/v1/metric",
@@ -1933,6 +1806,27 @@ class ResourceTest(RestTest):
                           [u'2013-01-01T12:00:00+00:00', 3600.0, 7.0],
                           [u'2013-01-01T12:00:00+00:00', 60.0, 7.0]],
                          measures)
+
+    def test_search_resources_with_like(self):
+        result = self.app.post_json(
+            "/v1/resource/" + self.resource_type,
+            params=self.attributes)
+        created_resource = json.loads(result.text)
+
+        result = self.app.post_json(
+            "/v1/search/resource/" + self.resource_type,
+            params={"like": {"name": "my%"}},
+            status=200)
+
+        resources = json.loads(result.text)
+        self.assertIn(created_resource, resources)
+
+        result = self.app.post_json(
+            "/v1/search/resource/" + self.resource_type,
+            params={"like": {"name": str(uuid.uuid4())}},
+            status=200)
+        resources = json.loads(result.text)
+        self.assertEqual([], resources)
 
 
 class GenericResourceTest(RestTest):
@@ -1984,35 +1878,3 @@ class GenericResourceTest(RestTest):
             "Invalid input: extra keys not allowed @ data["
             + repr(u'wrongoperator') + "]",
             result.text)
-
-    def test_search_resources_with_like(self):
-        attributes = {
-            "id": str(uuid.uuid4()),
-            "started_at": "2014-01-03T02:02:02.000000",
-            "host": "computenode42",
-            "image_ref": "imageref!",
-            "flavor_id": "123",
-            "display_name": "myinstance",
-        }
-        result = self.app.post_json(
-            "/v1/resource/instance",
-            params=attributes)
-        created_resource = json.loads(result.text)
-
-        result = self.app.post_json(
-            "/v1/search/resource/instance",
-            params={"like": {"host": "computenode%"}},
-            status=200)
-
-        resources = json.loads(result.text)
-        self.assertIn(created_resource, resources)
-
-        result = self.app.post_json(
-            "/v1/search/resource/instance",
-            params={"like": {"host": str(uuid.uuid4())}},
-            status=200)
-        resources = json.loads(result.text)
-        self.assertEqual([], resources)
-
-
-ResourceTest.generate_scenarios()

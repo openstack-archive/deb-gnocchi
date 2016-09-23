@@ -32,19 +32,15 @@ responsible for linking resources with metrics.
 How to choose back-ends
 ~~~~~~~~~~~~~~~~~~~~~~~
 
-Gnocchi currently offers 4 storage drivers:
+Gnocchi currently offers different storage drivers:
 
 * File
 * Swift
 * Ceph (preferred)
-* InfluxDB (experimental)
 
-The first three drivers are based on an intermediate library, named
-*Carbonara*, which handles the time series manipulation, since none of these
-storage technologies handle time series natively. `InfluxDB`_ does not need
-this layer since it is itself a time series database. However, The InfluxDB
-driver is still experimental and suffers from bugs in InfluxDB itself that are
-yet to be fixed as of this writing.
+The drivers are based on an intermediate library, named *Carbonara*, which
+handles the time series manipulation, since none of these storage technologies
+handle time series natively.
 
 The three *Carbonara* based drivers are working well and are as scalable as
 their back-end technology permits. Ceph and Swift are inherently more scalable
@@ -57,45 +53,44 @@ Gnocchi processes. In any case, it is obvious that Ceph and Swift drivers are
 largely more scalable. Ceph also offers better consistency, and hence is the
 recommended driver.
 
-.. _InfluxDB: http://influxdb.com
-
 How to plan for Gnocchi’s storage
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+---------------------------------
 
 Gnocchi uses a custom file format based on its library *Carbonara*. In Gnocchi,
-a time serie is a collection of points, where a point is a given measure, or
-sample, in the lifespan of a time serie. The storage format is compressed using
-various techniques, therefore the computing of a time serie's size can be
-estimated based on its worst case scenario with the following formula::
+a time series is a collection of points, where a point is a given measure, or
+sample, in the lifespan of a time series. The storage format is compressed
+using various techniques, therefore the computing of a time series' size can be
+estimated based on its **worst** case scenario with the following formula::
 
-    number of points × 9 bytes = size in bytes
+    number of points × 8 bytes = size in bytes
 
 The number of points you want to keep is usually determined by the following
 formula::
 
-    number of points = timespan ÷ granularity
+    number of points = timespan ÷ granularity
 
 For example, if you want to keep a year of data with a one minute resolution::
 
-    number of points = (365 days × 24 hours × 60 minutes) ÷ 1 minute
-    number of points = 525 600
+    number of points = (365 days × 24 hours × 60 minutes) ÷ 1 minute
+    number of points = 525 600
 
 Then::
 
-    size in bytes = 525 600 × 9 = 4 730 400 bytes = 4 620 KiB
+    size in bytes = 525 600 × 8 = 4 204 800 bytes = 4 106 KiB
 
-This is just for a single aggregated time serie. If your archive policy uses
+This is just for a single aggregated time series. If your archive policy uses
 the 8 default aggregation methods (mean, min, max, sum, std, median, count,
 95pct) with the same "one year, one minute aggregations" resolution, the space
-used will go up to a maximum of 8 × 4.5 MiB = 36 MiB.
+used will go up to a maximum of 8 × 4.1 MiB = 32.8 MiB.
+
 
 How to set the archive policy and granularity
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+---------------------------------------------
 
 In Gnocchi, the archive policy is expressed in number of points. If your
 archive policy defines a policy of 10 points with a granularity of 1 second,
-the time serie archive will keep up to 10 seconds, each representing an
-aggregation over 1 second. This means the time serie will at maximum retain 10
+the time series archive will keep up to 10 seconds, each representing an
+aggregation over 1 second. This means the time series will at maximum retain 10
 seconds of data (sometimes a bit more) between the more recent point and the
 oldest point. That does not mean it will be 10 consecutive seconds: there might
 be a gap if data is fed irregularly.
@@ -109,9 +104,34 @@ policies. A typical low grained use case could be::
 
     3600 points with a granularity of 1 second = 1 hour
     1440 points with a granularity of 1 minute = 24 hours
-    1800 points with a granularity of 1 hour = 30 days
+    720 points with a granularity of 1 hour = 30 days
     365 points with a granularity of 1 day = 1 year
 
-This would represent 7205 points × 17.92 = 126 KiB per aggregation method. If
-you use the 8 standard aggregation method, your metric will take up to 8 × 126
-KiB = 0.98 MiB of disk space.
+This would represent 6125 points × 9 = 54 KiB per aggregation method. If
+you use the 8 standard aggregation method, your metric will take up to 8 × 54
+KiB = 432 KiB of disk space.
+
+Default archive policies
+------------------------
+
+By default, 3 archive policies are created using the default archive policy
+list (listed in `default_aggregation_methods`, i.e. mean, min, max, sum, std,
+median, count, 95pct):
+
+- low (maximum estimated size per metric: 5 KiB)
+
+  * 5 minutes granularity over 1 hour
+  * 1 hour granularity over 1 day
+  * 1 day granularity over 1 month
+
+- medium (maximum estimated size per metric: 139 KiB)
+
+  * 1 minute granularity over 1 day
+  * 1 hour granularity over 1 week
+  * 1 day granularity over 1 year
+
+- high (maximum estimated size per metric: 1 578 KiB)
+
+  * 1 second granularity over 1 hour
+  * 1 minute granularity over 1 week
+  * 1 hour granularity over 1 year

@@ -43,8 +43,30 @@ export GNOCCHI_SERVICE_URL=$(openstack catalog show metric -c endpoints -f value
 
 curl -X GET ${GNOCCHI_SERVICE_URL}/v1/archive_policy -H "Content-Type: application/json"
 
+sudo gnocchi-upgrade
 
-# Run tests
+# Just ensure tools still works
+gnocchi metric create
+sudo -E -H -u stack $GNOCCHI_DIR/tools/measures_injector.py --metrics 1 --batch-of-measures 2 --measures-per-batch 2
+
+# NOTE(sileht): on swift job permissions are wrong, I don't known why
+sudo chown -R tempest:stack $BASE/new/tempest
+sudo chown -R tempest:stack $BASE/data/tempest
+
+# Run tests with tempst
+cd $BASE/new/tempest
+set +e
+sudo -H -u tempest OS_TEST_TIMEOUT=$TEMPEST_OS_TEST_TIMEOUT tox -eall-plugin -- gnocchi --concurrency=$TEMPEST_CONCURRENCY
+TEMPEST_EXIT_CODE=$?
+set -e
+if [[ $TEMPEST_EXIT_CODE != 0 ]]; then
+    # Collect and parse result
+    generate_testr_results
+    exit $TEMPEST_EXIT_CODE
+fi
+
+# Run tests with tox
+cd $GNOCCHI_DIR
 echo "Running gnocchi functional test suite"
 set +e
 sudo -E -H -u stack tox -epy27-gate

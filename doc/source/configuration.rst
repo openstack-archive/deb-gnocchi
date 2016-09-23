@@ -10,19 +10,7 @@ easily created by running:
 
 ::
 
-    tox -e genconfig
-
-This command will create an `etc/gnocchi/gnocchi.conf` file which can be used
-as a base for the default configuration file at `/etc/gnocchi/gnocchi.conf`. If
-you're using _devstack_, this file is already generated and put in place.
-
-If you installed Gnocchi using pip, you can create a sample `gnocchi.conf` file
-using the following commands:
-
-::
-
-    curl -O "https://raw.githubusercontent.com/openstack/gnocchi/master/etc/gnocchi/gnocchi-config-generator.conf"
-    oslo-config-generator --config-file=gnocchi-config-generator.conf --output-file=gnocchi.conf
+    oslo-config-generator --config-file=/etc/gnocchi/gnocchi-config-generator.conf --output-file=/etc/gnocchi/gnocchi.conf
 
 The configuration file should be pretty explicit, but here are some of the base
 options you want to change and configure:
@@ -51,7 +39,6 @@ Gnocchi provides these storage drivers:
 - File (default)
 - `Swift`_
 - `Ceph`_
-- `InfluxDB`_ (experimental)
 
 Gnocchi provides these indexer drivers:
 
@@ -62,7 +49,6 @@ Gnocchi provides these indexer drivers:
 .. _`Ceph`: http://ceph.com/
 .. _`PostgreSQL`: http://postgresql.org
 .. _`MySQL`: http://mysql.com
-.. _`InfluxDB`: http://influxdb.com
 
 Configuring the WSGI pipeline
 -----------------------------
@@ -77,15 +63,7 @@ installed the `keystone` flavor using `pip` (see :ref:`installation`), you can
 edit the `api-paste.ini` file to add the Keystone authentication middleware::
 
   [pipeline:main]
-  pipeline = keystone_authtoken gnocchi
-
-Also, if you're planning on using `CORS`_ (e.g. to use `Grafana`_), you an also
-add the CORS middleware in the server pipeline::
-
-  [pipeline:main]
-  pipeline = keystone_authtoken cors gnocchi
-
-With or without Keystone support.
+  pipeline = gnocchi+auth
 
 .. _`Paste Deployment`: http://pythonpaste.org/deploy/
 .. _`OpenStack Keystone`: http://launchpad.net/keystone
@@ -111,7 +89,7 @@ For a more robust multi-nodes deployment, the coordinator may be changed via
 the `storage.coordination_url` configuration option to one of the other `tooz
 backends`_.
 
-For example to use Redis backend::
+For example, to use Redis backend::
 
     coordination_url = redis://<sentinel host>?sentinel=<master name>
 
@@ -129,8 +107,8 @@ Ceph driver implementation details
 Each batch of measurements to process is stored into one rados object.
 These objects are named `measures_<metric_id>_<random_uuid>_<timestamp>`
 
-Also a special empty object called `measures` has the list of measures to
-process stored in its xattr attributes.
+Also a special empty object called `measure` has the list of measures to
+process stored in its omap attributes.
 
 Because of the asynchronous nature of how we store measurements in Gnocchi,
 `gnocchi-metricd` needs to know the list of objects that are waiting to be
@@ -141,11 +119,12 @@ processed:
 - Using a custom format into a rados object, would force us to use a lock
   each time we would change it.
 
-Instead, the xattrs of one empty rados object are used. No lock is needed to
-add/remove a xattr.
+Instead, the omaps of one empty rados object are used. No lock is needed to
+add/remove an omap attribute.
 
-But depending on the filesystem used by ceph OSDs, this xattrs can have a
-limitation in terms of numbers and size if Ceph is not correctly configured.
+Also xattrs attributes are used to store the list of aggregations used for a
+metric. So depending on the filesystem used by ceph OSDs, xattrs can have
+a limitation in terms of numbers and size if Ceph is not correctly configured.
 See `Ceph extended attributes documentation`_ for more details.
 
 Then, each Carbonara generated file is stored in *one* rados object.
@@ -168,7 +147,7 @@ So, in realistic scenarios, the direct relation between the archive policy and
 the size of the rados objects created by Gnocchi is not a problem.
 
 
-Also Gnocchi can use `cradox`_ Python libary if installed. This library is a
+Also Gnocchi can use `cradox`_ Python library if installed. This library is a
 Python binding to librados written with `Cython`_, aiming to replace the one
 written with `ctypes`_ provided by Ceph.
 This new library will be part of next Ceph release (10.0.4).
@@ -185,3 +164,14 @@ installed to improve the Ceph backend performance.
 .. _`Cython`: http://cython.org/
 .. _`ctypes`: https://docs.python.org/2/library/ctypes.html
 .. _`rados.py`: https://docs.python.org/2/library/ctypes.htm://github.com/ceph/ceph/blob/hammer/src/pybind/rados.py
+
+
+Swift driver implementation details
+-----------------------------------
+
+The Swift driver leverages the bulk delete functionality provided by the bulk_
+middleware to minimise the amount of requests made to clean storage data. This
+middleware must be enabled to ensure Gnocchi functions correctly. By default,
+Swift has this middleware enabled in its pipeline.
+
+.. _bulk: http://docs.openstack.org/liberty/config-reference/content/object-storage-bulk-delete.html
