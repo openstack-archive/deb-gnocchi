@@ -15,13 +15,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import logging
 import multiprocessing
 
 from oslo_config import cfg
 from oslo_db import options as db_options
 from oslo_log import log
 from oslo_policy import opts as policy_opts
+import pbr.version
 from six.moves.urllib import parse as urlparse
 
 from gnocchi import archive_policy
@@ -34,6 +34,7 @@ def prepare_service(args=None, conf=None,
                     default_config_files=None):
     if conf is None:
         conf = cfg.ConfigOpts()
+    opts.set_defaults()
     # FIXME(jd) Use the pkg_entry info to register the options of these libs
     log.register_options(conf)
     db_options.set_defaults(conf)
@@ -54,11 +55,11 @@ def prepare_service(args=None, conf=None,
     except NotImplementedError:
         default_workers = 1
 
-    conf.set_default("workers", default_workers, group="api")
     conf.set_default("workers", default_workers, group="metricd")
 
     conf(args, project='gnocchi', validate_default_values=True,
-         default_config_files=default_config_files)
+         default_config_files=default_config_files,
+         version=pbr.version.VersionInfo('gnocchi').version_string())
 
     # If no coordination URL is provided, default to using the indexer as
     # coordinator
@@ -72,7 +73,9 @@ def prepare_service(args=None, conf=None,
                          urlparse.urlunparse(parsed),
                          "storage")
 
+    log.set_defaults(default_log_levels=log.get_default_log_levels() +
+                     ["passlib.utils.compat=INFO"])
     log.setup(conf, 'gnocchi')
-    conf.log_opt_values(LOG, logging.DEBUG)
+    conf.log_opt_values(LOG, log.DEBUG)
 
     return conf

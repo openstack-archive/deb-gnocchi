@@ -20,14 +20,13 @@ import tempfile
 import threading
 import time
 from unittest import case
-import uuid
 import warnings
 
 from gabbi import fixture
-import sqlalchemy.engine.url as sqlalchemy_url
 import sqlalchemy_utils
 
 from gnocchi import indexer
+from gnocchi.indexer import sqlalchemy
 from gnocchi.rest import app
 from gnocchi import service
 from gnocchi import storage
@@ -84,10 +83,7 @@ class ConfigFixture(fixture.GabbiFixture):
         self.conf = conf
         self.tmp_dir = data_tmp_dir
 
-        # TODO(jd) It would be cool if Gabbi was able to use the null://
-        # indexer, but this makes the API returns a lot of 501 error, which
-        # Gabbi does not want to see, so let's just disable it.
-        if conf.indexer.url is None or conf.indexer.url == "null://":
+        if conf.indexer.url is None:
             raise case.SkipTest("No indexer configured")
 
         # Use the presence of DEVSTACK_GATE_TEMPEST as a semaphore
@@ -102,16 +98,15 @@ class ConfigFixture(fixture.GabbiFixture):
 
         # NOTE(jd) All of that is still very SQL centric but we only support
         # SQL for now so let's say it's good enough.
-        url = sqlalchemy_url.make_url(conf.indexer.url)
-
-        url.database = url.database + str(uuid.uuid4()).replace('-', '')
-        db_url = str(url)
-        conf.set_override('url', db_url, 'indexer')
-        sqlalchemy_utils.create_database(db_url)
+        conf.set_override(
+            'url',
+            sqlalchemy.SQLAlchemyIndexer._create_new_database(
+                conf.indexer.url),
+            'indexer')
 
         index = indexer.get_driver(conf)
         index.connect()
-        index.upgrade()
+        index.upgrade(create_legacy_resource_types=True)
 
         conf.set_override('pecan_debug', False, 'api')
 
@@ -143,13 +138,13 @@ class ConfigFixture(fixture.GabbiFixture):
         if hasattr(self, 'index'):
             self.index.disconnect()
 
-        if not self.conf.indexer.url.startswith("null://"):
-            # Swallow noise from missing tables when dropping
-            # database.
-            with warnings.catch_warnings():
-                warnings.filterwarnings('ignore',
-                                        module='sqlalchemy.engine.default')
-                sqlalchemy_utils.drop_database(self.conf.indexer.url)
+        # Swallow noise from missing tables when dropping
+        # database.
+        with warnings.catch_warnings():
+            warnings.filterwarnings('ignore',
+                                    module='sqlalchemy.engine.default')
+            sqlalchemy_utils.drop_database(self.conf.indexer.url)
+
         if self.tmp_dir:
             shutil.rmtree(self.tmp_dir)
 
@@ -167,7 +162,9 @@ class MetricdThread(threading.Thread):
 
     def run(self):
         while self.flag:
-            self.storage.process_background_tasks(self.index)
+            metrics = self.storage.list_metric_with_measures_to_process(
+                None, None, full=True)
+            self.storage.process_background_tasks(self.index, metrics)
             time.sleep(0.1)
 
     def stop(self):

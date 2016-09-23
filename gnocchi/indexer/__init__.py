@@ -13,12 +13,12 @@
 # WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 # License for the specific language governing permissions and limitations
 # under the License.
-import fnmatch
 import hashlib
 import os
 
 import iso8601
 from oslo_config import cfg
+from oslo_utils import fnmatch
 from oslo_utils import netutils
 import six
 from stevedore import driver
@@ -87,7 +87,7 @@ class NoSuchResourceType(IndexerException):
     """Error raised when the resource type is unknown."""
     def __init__(self, type):
         super(NoSuchResourceType, self).__init__(
-            "Resource type %s does not exist" % str(type))
+            "Resource type %s does not exist" % type)
         self.type = type
 
 
@@ -95,7 +95,7 @@ class NoSuchMetric(IndexerException):
     """Error raised when a metric does not exist."""
     def __init__(self, metric):
         super(NoSuchMetric, self).__init__("Metric %s does not exist" %
-                                           str(metric))
+                                           metric)
         self.metric = metric
 
 
@@ -103,7 +103,7 @@ class NoSuchResource(IndexerException):
     """Error raised when a resource does not exist."""
     def __init__(self, resource):
         super(NoSuchResource, self).__init__("Resource %s does not exist" %
-                                             str(resource))
+                                             resource)
         self.resource = resource
 
 
@@ -111,9 +111,18 @@ class NoSuchArchivePolicy(IndexerException):
     """Error raised when an archive policy does not exist."""
     def __init__(self, archive_policy):
         super(NoSuchArchivePolicy, self).__init__(
-            "Archive policy %s does not exist" %
-            str(archive_policy))
+            "Archive policy %s does not exist" % archive_policy)
         self.archive_policy = archive_policy
+
+
+class UnsupportedArchivePolicyChange(IndexerException):
+    """Error raised when modifying archive policy if not supported."""
+    def __init__(self, archive_policy, message):
+        super(UnsupportedArchivePolicyChange, self).__init__(
+            "Archive policy %s does not support change: %s" %
+            (archive_policy, message))
+        self.archive_policy = archive_policy
+        self.message = message
 
 
 class ArchivePolicyInUse(IndexerException):
@@ -124,12 +133,31 @@ class ArchivePolicyInUse(IndexerException):
         self.archive_policy = archive_policy
 
 
+class ResourceTypeInUse(IndexerException):
+    """Error raised when an resource type is still being used."""
+    def __init__(self, resource_type):
+        super(ResourceTypeInUse, self).__init__(
+            "Resource type %s is still in use" % resource_type)
+        self.resource_type = resource_type
+
+
+class UnexpectedResourceTypeState(IndexerException):
+    """Error raised when an resource type state is not expected."""
+    def __init__(self, resource_type, expected_state, state):
+        super(UnexpectedResourceTypeState, self).__init__(
+            "Resource type %s state is %s (expected: %s)" % (
+                resource_type, state, expected_state))
+        self.resource_type = resource_type
+        self.expected_state = expected_state
+        self.state = state
+
+
 class NoSuchArchivePolicyRule(IndexerException):
     """Error raised when an archive policy rule does not exist."""
     def __init__(self, archive_policy_rule):
         super(NoSuchArchivePolicyRule, self).__init__(
             "Archive policy rule %s does not exist" %
-            str(archive_policy_rule))
+            archive_policy_rule)
         self.archive_policy_rule = archive_policy_rule
 
 
@@ -138,7 +166,7 @@ class NoArchivePolicyRuleMatch(IndexerException):
     def __init__(self, metric_name):
         super(NoArchivePolicyRuleMatch, self).__init__(
             "No Archive policy rule found for metric %s" %
-            str(metric_name))
+            metric_name)
         self.metric_name = metric_name
 
 
@@ -156,6 +184,14 @@ class ResourceAlreadyExists(IndexerException):
         super(ResourceAlreadyExists, self).__init__(
             "Resource %s already exists" % resource)
         self.resource = resource
+
+
+class ResourceTypeAlreadyExists(IndexerException):
+    """Error raised when a resource type already exists."""
+    def __init__(self, resource_type):
+        super(ResourceTypeAlreadyExists, self).__init__(
+            "Resource type %s already exists" % resource_type)
+        self.resource_type = resource_type
 
 
 class ResourceAttributeError(IndexerException, AttributeError):
@@ -238,7 +274,7 @@ class IndexerDriver(object):
         pass
 
     @staticmethod
-    def upgrade(nocreate=False):
+    def upgrade(nocreate=False, create_legacy_resource_types=False):
         pass
 
     @staticmethod
@@ -270,6 +306,10 @@ class IndexerDriver(object):
         raise exceptions.NotImplementedError
 
     @staticmethod
+    def update_archive_policy(name, ap_items):
+        raise exceptions.NotImplementedError
+
+    @staticmethod
     def delete_archive_policy(name):
         raise exceptions.NotImplementedError
 
@@ -291,12 +331,13 @@ class IndexerDriver(object):
 
     @staticmethod
     def create_metric(id, created_by_user_id, created_by_project_id,
-                      archive_policy_name, name=None, resource_id=None):
+                      archive_policy_name, name=None, unit=None,
+                      resource_id=None):
         raise exceptions.NotImplementedError
 
     @staticmethod
     def list_metrics(names=None, ids=None, details=False, status='active',
-                     **kwargs):
+                     limit=None, marker=None, sorts=None, **kwargs):
         raise exceptions.NotImplementedError
 
     @staticmethod
@@ -322,6 +363,11 @@ class IndexerDriver(object):
         raise exceptions.NotImplementedError
 
     @staticmethod
+    def delete_resources(resource_type='generic',
+                         attribute_filter=None):
+        raise exceptions.NotImplementedError
+
+    @staticmethod
     def delete_metric(id):
         raise exceptions.NotImplementedError
 
@@ -336,3 +382,30 @@ class IndexerDriver(object):
             if fnmatch.fnmatch(metric_name or "", rule.metric_pattern):
                 return self.get_archive_policy(rule.archive_policy_name)
         raise NoArchivePolicyRuleMatch(metric_name)
+
+    @staticmethod
+    def create_resource_type(resource_type):
+        raise exceptions.NotImplementedError
+
+    @staticmethod
+    def get_resource_type(name):
+        """Get a resource type from the indexer.
+
+        :param name: name of the resource type
+        """
+        raise exceptions.NotImplementedError
+
+    @staticmethod
+    def list_resource_types(attribute_filter=None,
+                            limit=None,
+                            marker=None,
+                            sorts=None):
+        raise exceptions.NotImplementedError
+
+    @staticmethod
+    def get_resource_attributes_schemas():
+        raise exceptions.NotImplementedError
+
+    @staticmethod
+    def get_resource_type_schema():
+        raise exceptions.NotImplementedError

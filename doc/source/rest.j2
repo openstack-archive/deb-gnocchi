@@ -12,11 +12,11 @@ these headers in your HTTP requests:
 * X-Project-Id
 
 The `X-Roles` header can also be provided in order to match role based ACL
-specified in `policy.json`.
+specified in `policy.json`, as `X-Domain-Id` to match domain based ACL.
 
 If you enable the OpenStack Keystone middleware, you only need to authenticate
 against Keystone and provide `X-Auth-Token` header with a valid token for each
-request sent to Gnocchi. The headers mentionned above will be filled
+request sent to Gnocchi. The headers mentioned above will be filled
 automatically based on your Keystone authorizations.
 
 Metrics
@@ -41,6 +41,19 @@ To retrieve the list of all the metrics created, use the following request:
 
 {{ scenarios['list-metric']['doc'] }}
 
+.. note::
+
+  Considering the large volume of metrics Gnocchi will store, query results are
+  limited to `max_limit` value set in the configuration file. Returned results
+  are ordered by metrics' id values. To retrieve the next page of results, the
+  id of a metric should be given as `marker` for the beginning of the next page
+  of results.
+
+Default ordering and limits as well as page start can be modified
+using query parameters:
+
+{{ scenarios['list-metric-pagination']['doc'] }}
+
 It is possible to send measures to the metric:
 
 {{ scenarios['post-measures']['doc'] }}
@@ -59,6 +72,17 @@ Once measures are sent, it is possible to retrieve them using *GET* on the same
 endpoint:
 
 {{ scenarios['get-measures']['doc'] }}
+
+Depending on the driver, there may be some lag after POSTing measures before
+they are processed and queryable. To ensure your query returns all measures
+that have been POSTed, you can force any unprocessed measures to be handled:
+
+{{ scenarios['get-measures-refresh']['doc'] }}
+
+.. note::
+
+   Depending on the amount of data that is unprocessed, `refresh` may add
+   some overhead to your query.
 
 The list of points returned is composed of tuples with (timestamp, granularity,
 value) sorted by timestamp. The granularity is the timespan covered by
@@ -159,9 +183,26 @@ It is also possible to list archive policies:
 
 {{ scenarios['list-archive-policy']['doc'] }}
 
+Existing archive policies can be modified to retain more or less data depending
+on requirements. If the policy coverage is expanded, measures are not
+retroactively calculated as backfill to accommodate the new timespan:
+
+{{ scenarios['update-archive-policy']['doc'] }}
+
+.. note::
+
+   Granularities cannot be changed to a different rate. Also, granularities
+   cannot be added or dropped from a policy.
+
 It is possible to delete an archive policy if it is not used by any metric:
 
 {{ scenarios['delete-archive-policy']['doc'] }}
+
+.. note::
+
+   An archive policy cannot be deleted until all metrics associated with it
+   are removed by a metricd daemon.
+
 
 Archive Policy Rule
 ===================
@@ -251,14 +292,29 @@ And to retrieve its modification history:
 
 {{ scenarios['get-patched-instance-history']['doc'] }}
 
-It possible to delete a resource altogether:
+It is possible to delete a resource altogether:
 
 {{ scenarios['delete-resource-generic']['doc'] }}
 
+It is also possible to delete a batch of resources based on attribute values, and
+returns a number of deleted resources.
+
+To delete resources based on ids:
+
+{{ scenarios['delete-resources-by-ids']['doc'] }}
+
+or delete resources based on time:
+
+{{ scenarios['delete-resources-by-time']['doc']}}
+
 .. IMPORTANT::
 
-   When a resource is deleted, all its associated metrics are deleted at the
-   same time.
+  When a resource is deleted, all its associated metrics are deleted at the
+  same time.
+
+  When a batch of resources are deleted, an attribute filter is required to
+  avoid deletion of the entire database.
+
 
 All resources can be listed, either by using the `generic` type that will list
 all types of resources, or by filtering on their resource type:
@@ -274,6 +330,16 @@ resource type endpoint:
 or using `details=true` in the query parameter:
 
 {{ scenarios['list-resource-generic-details']['doc'] }}
+
+.. note::
+
+  Similar to metric list, query results are limited to `max_limit` value set in
+  the configuration file.
+
+Returned results represent a single page of data and are ordered by resouces'
+revision_start time and started_at values:
+
+{{ scenarios['list-resource-generic-pagination']['doc'] }}
 
 Each resource can be linked to any number of metrics. The `metrics` attributes
 is a key/value field where the key is the name of the relationship and
@@ -296,6 +362,43 @@ The same endpoint can be used to append metrics to a resource:
 
 .. _Nova: http://launchpad.net/nova
 
+Resource Types
+==============
+
+Gnocchi is able to manage resource types with custom attributes.
+
+To create a new resource type:
+
+{{ scenarios['create-resource-type']['doc'] }}
+
+Then to retrieve its description:
+
+{{ scenarios['get-resource-type']['doc'] }}
+
+All resource types can be listed like this:
+
+{{ scenarios['list-resource-type']['doc'] }}
+
+It can also be deleted if no more resources are associated to it:
+
+{{ scenarios['delete-resource-type']['doc'] }}
+
+Attributes can be added or removed:
+
+{{ scenarios['patch-resource-type']['doc'] }}
+
+Creating resource type means creation of new tables on the indexer backend.
+This is heavy operation that will lock some tables for a short amount of times.
+When the resource type is created, its initial `state` is `creating`. When the
+new tables have been created, the state switches to `active` and the new
+resource type is ready to be used. If something unexpected occurs during this
+step, the state switches to `creation_error`.
+
+The same behavior occurs when the resource type is deleted. The state starts to
+switch to `deleting`, the resource type is no more usable. Then the tables are
+removed and the finally the resource_type is really deleted from the database.
+If some unexpected occurs the state switches to `deletion_error`.
+
 Searching for resources
 =======================
 
@@ -306,6 +409,10 @@ When listing resources, it is possible to filter resources based on attributes
 values:
 
 {{ scenarios['search-resource-for-user']['doc'] }}
+
+Or even:
+
+{{ scenarios['search-resource-for-host-like']['doc'] }}
 
 Complex operators such as `and` and `or` are also available:
 
@@ -380,6 +487,12 @@ It can also be done by providing the list of metrics to aggregate:
    of this already aggregated data may not have sense for certain kind of
    aggregation method (e.g. stdev).
 
+By default, the measures are aggregated using the aggregation method provided,
+e.g. you'll get a mean of means, or a max of maxs. You can specify what method
+to use over the retrieved aggregation by using the `reaggregate` parameter:
+
+{{ scenarios['get-across-metrics-measures-by-metric-ids-reaggregate']['doc'] }}
+
 It's also possible to do that aggregation on metrics linked to resources. In
 order to select these resources, the following endpoint accepts a query such as
 the one described in `Searching for resources`_.
@@ -390,6 +503,10 @@ It is possible to group the resource search results by any attribute of the
 requested resource type, and the compute the aggregation:
 
 {{ scenarios['get-across-metrics-measures-by-attributes-lookup-groupby']['doc'] }}
+
+Similar to retrieving measures for a single metric, the `refresh` parameter
+can be provided to force all POSTed measures to be processed across all
+metrics before computing the result.
 
 Also aggregation across metrics have different behavior depending
 on if boundary are set ('start' and 'stop') and if 'needed_overlap' is set.

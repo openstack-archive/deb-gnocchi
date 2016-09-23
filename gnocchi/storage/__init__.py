@@ -13,10 +13,9 @@
 # WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 # License for the specific language governing permissions and limitations
 # under the License.
-import logging
 import operator
 from oslo_config import cfg
-from oslo_utils import timeutils
+from oslo_log import log
 from stevedore import driver
 
 from gnocchi import exceptions
@@ -28,21 +27,25 @@ OPTS = [
                default='file',
                help='Storage driver to use'),
     cfg.IntOpt('metric_processing_delay',
-               default=5,
+               default=60,
                help="How many seconds to wait between "
-               "new metric measure processing"),
+               "scheduling new metrics to process"),
     cfg.IntOpt('metric_reporting_delay',
-               default=10,
+               default=120,
                help="How many seconds to wait between "
                "metric ingestion reporting"),
+    cfg.IntOpt('metric_cleanup_delay',
+               default=300,
+               help="How many seconds to wait between "
+               "cleaning of expired data"),
 ]
 
-LOG = logging.getLogger(__name__)
+LOG = log.getLogger(__name__)
 
 
 class Measure(object):
     def __init__(self, timestamp, value):
-        self.timestamp = timeutils.normalize_time(timestamp)
+        self.timestamp = timestamp
         self.value = value
 
     def __iter__(self):
@@ -168,11 +171,10 @@ class StorageDriver(object):
     def upgrade(index):
         pass
 
-    def process_background_tasks(self, index, block_size=128, sync=False):
+    def process_background_tasks(self, index, metrics, sync=False):
         """Process background tasks for this storage.
 
-        This calls :func:`process_measures` to process new measures and
-        :func:`expunge_metrics` to expunge deleted metrics.
+        This calls :func:`process_new_measures` to process new measures
 
         :param index: An indexer to be used for querying metrics
         :param block_size: number of metrics to process
@@ -180,24 +182,24 @@ class StorageDriver(object):
                      on error
         :type sync: bool
         """
-        LOG.debug("Processing new and to delete measures")
+        LOG.debug("Processing new measures")
         try:
-            self.process_measures(index, block_size, sync)
+            self.process_new_measures(index, metrics, sync)
         except Exception:
             if sync:
                 raise
             LOG.error("Unexpected error during measures processing",
                       exc_info=True)
-        LOG.debug("Expunging deleted metrics")
-        try:
-            self.expunge_metrics(index, sync)
-        except Exception:
-            if sync:
-                raise
-            LOG.error("Unexpected error during deleting metrics",
-                      exc_info=True)
 
     def expunge_metrics(self, index, sync=False):
+        """Remove deleted metrics
+
+        :param index: An indexer to be used for querying metrics
+        :param sync: If True, then delete everything synchronously and raise
+                     on error
+        :type sync: bool
+        """
+
         metrics_to_expunge = index.list_metrics(status='delete')
         for m in metrics_to_expunge:
             try:
@@ -225,7 +227,7 @@ class StorageDriver(object):
         raise exceptions.NotImplementedError
 
     @staticmethod
-    def process_measures(indexer=None, block_size=None, sync=False):
+    def process_new_measures(indexer, metrics, sync=False):
         """Process added measures in background.
 
         Some drivers might need to have a background task running that process
@@ -264,6 +266,7 @@ class StorageDriver(object):
     @staticmethod
     def get_cross_metric_measures(metrics, from_timestamp=None,
                                   to_timestamp=None, aggregation='mean',
+                                  reaggregation=None,
                                   granularity=None,
                                   needed_overlap=None):
         """Get aggregated measures of multiple entities.
@@ -273,6 +276,8 @@ class StorageDriver(object):
         :param to timestamp: The timestamp to get the measure to.
         :param granularity: The granularity to retrieve.
         :param aggregation: The type of aggregation to retrieve.
+        :param reaggregation: The type of aggregation to compute
+                              on the retrieved measures.
         """
         for metric in metrics:
             if aggregation not in metric.archive_policy.aggregation_methods:

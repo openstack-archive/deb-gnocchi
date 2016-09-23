@@ -19,16 +19,19 @@ import datetime
 import uuid
 
 from oslo_config import cfg
-import retrying
+from oslo_log import log
 import six
+from six.moves.urllib.parse import quote
 try:
     from swiftclient import client as swclient
+    from swiftclient import utils as swift_utils
 except ImportError:
     swclient = None
 
 from gnocchi import storage
 from gnocchi.storage import _carbonara
 
+LOG = log.getLogger(__name__)
 
 OPTS = [
     cfg.StrOpt('swift_auth_version',
@@ -45,15 +48,25 @@ OPTS = [
     cfg.StrOpt('swift_user',
                default="admin:admin",
                help='Swift user.'),
+    cfg.StrOpt('swift_user_domain_name',
+               default='Default',
+               help='Swift user domain name.'),
     cfg.StrOpt('swift_key',
                secret=True,
                default="admin",
                help='Swift key/password.'),
-    cfg.StrOpt('swift_tenant_name',
-               help='Swift tenant name, only used in v2 auth.'),
+    cfg.StrOpt('swift_project_name',
+               help='Swift tenant name, only used in v2/v3 auth.',
+               deprecated_name="swift_tenant_name"),
+    cfg.StrOpt('swift_project_domain_name',
+               default='Default',
+               help='Swift project domain name.'),
     cfg.StrOpt('swift_container_prefix',
                default='gnocchi',
                help='Prefix to namespace metric containers.'),
+    cfg.StrOpt('swift_endpoint_type',
+               default='publicURL',
+               help='Endpoint type to connect to Swift',),
     cfg.IntOpt('swift_timeout',
                min=0,
                default=300,
@@ -61,11 +74,11 @@ OPTS = [
 ]
 
 
-def retry_if_result_empty(result):
-    return len(result) == 0
-
-
 class SwiftStorage(_carbonara.CarbonaraBasedStorage):
+
+    WRITE_FULL = True
+    POST_HEADERS = {'Accept': 'application/json', 'Content-Type': 'text/plain'}
+
     def __init__(self, conf):
         super(SwiftStorage, self).__init__(conf)
         if swclient is None:
@@ -76,8 +89,11 @@ class SwiftStorage(_carbonara.CarbonaraBasedStorage):
             preauthtoken=conf.swift_preauthtoken,
             user=conf.swift_user,
             key=conf.swift_key,
-            tenant_name=conf.swift_tenant_name,
-            timeout=conf.swift_timeout)
+            tenant_name=conf.swift_project_name,
+            timeout=conf.swift_timeout,
+            os_options={'endpoint_type': conf.swift_endpoint_type,
+                        'user_domain_name': conf.swift_user_domain_name},
+            retries=0)
         self._container_prefix = conf.swift_container_prefix
         self.swift.put_container(self.MEASURE_PREFIX)
 
@@ -85,8 +101,9 @@ class SwiftStorage(_carbonara.CarbonaraBasedStorage):
         return '%s.%s' % (self._container_prefix, str(metric.id))
 
     @staticmethod
-    def _object_name(split_key, aggregation, granularity):
-        return '%s_%s_%s' % (split_key, aggregation, granularity)
+    def _object_name(split_key, aggregation, granularity, version=3):
+        name = '%s_%s_%s' % (split_key, aggregation, granularity)
+        return name + '_v%s' % version if version else name
 
     def _create_metric(self, metric):
         # TODO(jd) A container per user in their account?
@@ -98,7 +115,7 @@ class SwiftStorage(_carbonara.CarbonaraBasedStorage):
         if resp['status'] == 204:
             raise storage.MetricAlreadyExists(metric)
 
-    def _store_measures(self, metric, data):
+    def _store_new_measures(self, metric, data):
         now = datetime.datetime.utcnow().strftime("_%Y%m%d_%H:%M:%S")
         self.swift.put_object(
             self.MEASURE_PREFIX,
@@ -106,30 +123,34 @@ class SwiftStorage(_carbonara.CarbonaraBasedStorage):
             data)
 
     def _build_report(self, details):
-        headers, files = self.swift.get_container(self.MEASURE_PREFIX,
-                                                  delimiter='/',
-                                                  full_listing=True)
-        metrics = len(files)
-        measures = headers.get('x-container-object-count')
         metric_details = defaultdict(int)
         if details:
             headers, files = self.swift.get_container(self.MEASURE_PREFIX,
                                                       full_listing=True)
+            metrics = set()
             for f in files:
-                metric = f['name'].split('/', 1)[0]
+                metric, metric_files = f['name'].split("/", 1)
                 metric_details[metric] += 1
-        return metrics, measures, metric_details if details else None
+                metrics.add(metric)
+            nb_metrics = len(metrics)
+        else:
+            headers, files = self.swift.get_container(self.MEASURE_PREFIX,
+                                                      delimiter='/',
+                                                      full_listing=True)
+            nb_metrics = len(files)
+        measures = int(headers.get('x-container-object-count'))
+        return nb_metrics, measures, metric_details if details else None
 
-    def _list_metric_with_measures_to_process(self, block_size, full=False):
+    def list_metric_with_measures_to_process(self, size, part, full=False):
         limit = None
         if not full:
-            limit = block_size * (self.partition + 1)
+            limit = size * (part + 1)
         headers, files = self.swift.get_container(self.MEASURE_PREFIX,
                                                   delimiter='/',
                                                   full_listing=full,
                                                   limit=limit)
         if not full:
-            files = files[block_size * self.partition:]
+            files = files[size * part:]
         return set(f['subdir'][:-1] for f in files if 'subdir' in f)
 
     def _list_measure_files_for_metric_id(self, metric_id):
@@ -141,16 +162,24 @@ class SwiftStorage(_carbonara.CarbonaraBasedStorage):
     def _pending_measures_to_process_count(self, metric_id):
         return len(self._list_measure_files_for_metric_id(metric_id))
 
+    def _bulk_delete(self, container, objects):
+        objects = [quote(('/%s/%s' % (container, obj['name'])).encode('utf-8'))
+                   for obj in objects]
+        resp = {}
+        headers, body = self.swift.post_account(
+            headers=self.POST_HEADERS, query_string='bulk-delete',
+            data=b''.join(obj.encode('utf-8') + b'\n' for obj in objects),
+            response_dict=resp)
+        if resp['status'] != 200:
+            raise storage.StorageError(
+                "Unable to bulk-delete, is bulk-delete enabled in Swift?")
+        resp = swift_utils.parse_api_response(headers, body)
+        LOG.debug('# of objects deleted: %s, # of objects skipped: %s',
+                  resp['Number Deleted'], resp['Number Not Found'])
+
     def _delete_unprocessed_measures_for_metric_id(self, metric_id):
         files = self._list_measure_files_for_metric_id(metric_id)
-        for f in files:
-            try:
-                self.swift.delete_object(self.MEASURE_PREFIX, f['name'])
-            except swclient.ClientException as e:
-                # If the object has already been deleted by another worker, do
-                # not worry.
-                if e.http_status != 404:
-                    raise
+        self._bulk_delete(self.MEASURE_PREFIX, files)
 
     @contextlib.contextmanager
     def _process_measure_for_metric(self, metric):
@@ -165,21 +194,22 @@ class SwiftStorage(_carbonara.CarbonaraBasedStorage):
         yield measures
 
         # Now clean objects
-        for f in files:
-            self.swift.delete_object(self.MEASURE_PREFIX, f['name'])
+        self._bulk_delete(self.MEASURE_PREFIX, files)
 
-    def _store_metric_measures(self, metric, timestamp_key,
-                               aggregation, granularity, data):
+    def _store_metric_measures(self, metric, timestamp_key, aggregation,
+                               granularity, data, offset=None, version=3):
         self.swift.put_object(
             self._container_name(metric),
-            self._object_name(timestamp_key, aggregation, granularity),
+            self._object_name(timestamp_key, aggregation, granularity,
+                              version),
             data)
 
     def _delete_metric_measures(self, metric, timestamp_key, aggregation,
-                                granularity):
+                                granularity, version=3):
         self.swift.delete_object(
             self._container_name(metric),
-            self._object_name(timestamp_key, aggregation, granularity))
+            self._object_name(timestamp_key, aggregation, granularity,
+                              version))
 
     def _delete_metric(self, metric):
         self._delete_unaggregated_timeserie(metric)
@@ -192,8 +222,7 @@ class SwiftStorage(_carbonara.CarbonaraBasedStorage):
                 # Maybe it never has been created (no measure)
                 raise
         else:
-            for obj in files:
-                self.swift.delete_object(container, obj['name'])
+            self._bulk_delete(container, files)
             try:
                 self.swift.delete_container(container)
             except swclient.ClientException as e:
@@ -201,14 +230,12 @@ class SwiftStorage(_carbonara.CarbonaraBasedStorage):
                     # Deleted in the meantime? Whatever.
                     raise
 
-    @retrying.retry(stop_max_attempt_number=4,
-                    wait_fixed=500,
-                    retry_on_result=retry_if_result_empty)
-    def _get_measures(self, metric, timestamp_key, aggregation, granularity):
+    def _get_measures(self, metric, timestamp_key, aggregation, granularity,
+                      version=3):
         try:
             headers, contents = self.swift.get_object(
                 self._container_name(metric), self._object_name(
-                    timestamp_key, aggregation, granularity))
+                    timestamp_key, aggregation, granularity, version))
         except swclient.ClientException as e:
             if e.http_status == 404:
                 try:
@@ -221,7 +248,8 @@ class SwiftStorage(_carbonara.CarbonaraBasedStorage):
             raise
         return contents
 
-    def _list_split_keys_for_metric(self, metric, aggregation, granularity):
+    def _list_split_keys_for_metric(self, metric, aggregation, granularity,
+                                    version=None):
         container = self._container_name(metric)
         try:
             headers, files = self.swift.get_container(
@@ -230,61 +258,43 @@ class SwiftStorage(_carbonara.CarbonaraBasedStorage):
             if e.http_status == 404:
                 raise storage.MetricDoesNotExist(metric)
             raise
-        keys = []
+        keys = set()
         for f in files:
             try:
-                key, agg, g = f['name'].split('_', 2)
-            except ValueError:
+                meta = f['name'].split('_')
+                if (aggregation == meta[1] and granularity == float(meta[2])
+                        and self._version_check(f['name'], version)):
+                    keys.add(meta[0])
+            except (ValueError, IndexError):
                 # Might be "none", or any other file. Be resilient.
                 continue
-            if aggregation == agg and granularity == float(g):
-                keys.append(key)
         return keys
 
-    @retrying.retry(stop_max_attempt_number=4,
-                    wait_fixed=500,
-                    retry_on_result=retry_if_result_empty)
-    def _get_unaggregated_timeserie(self, metric):
+    @staticmethod
+    def _build_unaggregated_timeserie_path(version):
+        return 'none' + ("_v%s" % version if version else "")
+
+    def _get_unaggregated_timeserie(self, metric, version=3):
         try:
             headers, contents = self.swift.get_object(
-                self._container_name(metric), "none")
+                self._container_name(metric),
+                self._build_unaggregated_timeserie_path(version))
         except swclient.ClientException as e:
             if e.http_status == 404:
                 raise storage.MetricDoesNotExist(metric)
             raise
         return contents
 
-    def _store_unaggregated_timeserie(self, metric, data):
-        self.swift.put_object(self._container_name(metric), "none", data)
+    def _store_unaggregated_timeserie(self, metric, data, version=3):
+        self.swift.put_object(self._container_name(metric),
+                              self._build_unaggregated_timeserie_path(version),
+                              data)
 
-    def _delete_unaggregated_timeserie(self, metric):
+    def _delete_unaggregated_timeserie(self, metric, version=3):
         try:
-            self.swift.delete_object(self._container_name(metric), "none")
+            self.swift.delete_object(
+                self._container_name(metric),
+                self._build_unaggregated_timeserie_path(version))
         except swclient.ClientException as e:
             if e.http_status != 404:
                 raise
-
-    # The following methods deal with Gnocchi <= 1.3 archives
-    def _get_metric_archive(self, metric, aggregation):
-        """Retrieve data in the place we used to store TimeSerieArchive."""
-        try:
-            headers, contents = self.swift.get_object(
-                self._container_name(metric), aggregation)
-        except swclient.ClientException as e:
-            if e.http_status == 404:
-                raise storage.AggregationDoesNotExist(metric, aggregation)
-            raise
-        return contents
-
-    def _store_metric_archive(self, metric, aggregation, data):
-        """Stores data in the place we used to store TimeSerieArchive."""
-        self.swift.put_object(self._container_name(metric), aggregation, data)
-
-    def _delete_metric_archives(self, metric):
-        for aggregation in metric.archive_policy.aggregation_methods:
-            try:
-                self.swift.delete_object(self._container_name(metric),
-                                         aggregation)
-            except swclient.ClientException as e:
-                if e.http_status != 404:
-                    raise

@@ -14,6 +14,7 @@
 import itertools
 
 from oslo_config import cfg
+from oslo_middleware import cors
 import uuid
 
 import gnocchi.archive_policy
@@ -21,7 +22,6 @@ import gnocchi.indexer
 import gnocchi.storage
 import gnocchi.storage.ceph
 import gnocchi.storage.file
-import gnocchi.storage.influxdb
 import gnocchi.storage.swift
 
 
@@ -37,18 +37,9 @@ def list_opts():
             cfg.StrOpt('paste_config',
                        default='api-paste.ini',
                        help='Path to API Paste configuration.'),
-            cfg.PortOpt('port',
-                        default=8041,
-                        help='The port for the Gnocchi API server.'),
-            cfg.StrOpt('host',
-                       default='0.0.0.0',
-                       help='The listen IP for the Gnocchi API server.'),
             cfg.BoolOpt('pecan_debug',
                         default=False,
                         help='Toggle Pecan Debug Middleware.'),
-            cfg.IntOpt('workers', min=1,
-                       help='Number of workers for Gnocchi API server. '
-                       'By default the available number of CPU is used.'),
             cfg.IntOpt('max_limit',
                        default=1000,
                        help=('The maximum number of items returned in a '
@@ -58,8 +49,7 @@ def list_opts():
                                     gnocchi.storage.OPTS,
                                     gnocchi.storage.ceph.OPTS,
                                     gnocchi.storage.file.OPTS,
-                                    gnocchi.storage.swift.OPTS,
-                                    gnocchi.storage.influxdb.OPTS)),
+                                    gnocchi.storage.swift.OPTS)),
         ("statsd", (
             cfg.StrOpt('host',
                        default='0.0.0.0',
@@ -87,3 +77,14 @@ def list_opts():
         )),
         ("archive_policy", gnocchi.archive_policy.OPTS),
     ]
+
+
+def set_defaults():
+    cfg.set_defaults(cors.CORS_OPTS,
+                     allow_headers=[
+                         'X-Auth-Token',
+                         'X-Subject-Token',
+                         'X-User-Id',
+                         'X-Domain-Id',
+                         'X-Project-Id',
+                         'X-Roles'])
