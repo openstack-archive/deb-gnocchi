@@ -14,10 +14,15 @@
 #    under the License.
 import abc
 
+import fixtures
 import mock
 from oslo_db.sqlalchemy import test_migrations
 import six
+import sqlalchemy as sa
+import sqlalchemy_utils
 
+from gnocchi import indexer
+from gnocchi.indexer import sqlalchemy
 from gnocchi.indexer import sqlalchemy_base
 from gnocchi.tests import base
 
@@ -31,9 +36,24 @@ class ModelsMigrationsSync(
                            base.TestCase,
                            test_migrations.ModelsMigrationsSync)):
 
+    def _set_timeout(self):
+        self.useFixture(fixtures.Timeout(120, gentle=True))
+
     def setUp(self):
         super(ModelsMigrationsSync, self).setUp()
         self.db = mock.Mock()
+        self.conf.set_override(
+            'url',
+            sqlalchemy.SQLAlchemyIndexer._create_new_database(
+                self.conf.indexer.url),
+            'indexer')
+        self.index = indexer.get_driver(self.conf)
+        self.index.connect()
+        self.index.upgrade(nocreate=True, create_legacy_resource_types=True)
+
+    def tearDown(self):
+        sqlalchemy_utils.drop_database(self.conf.indexer.url)
+        super(ModelsMigrationsSync, self).tearDown()
 
     @staticmethod
     def get_metadata():
@@ -42,8 +62,26 @@ class ModelsMigrationsSync(
     def get_engine(self):
         return self.index.get_engine()
 
-    @staticmethod
-    def db_sync(engine):
-        # NOTE(jd) Nothing to do here as setUp() in the base class is already
-        # creating table using upgrade
-        pass
+    def db_sync(self, engine):
+        # NOTE(sileht): We ensure all resource type sqlalchemy model are loaded
+        # in this process
+        for rt in self.index.list_resource_types():
+            if rt.state == "active":
+                self.index._RESOURCE_TYPE_MANAGER.get_classes(rt)
+
+    def filter_metadata_diff(self, diff):
+        tables_to_keep = []
+        for rt in self.index.list_resource_types():
+            if rt.name.startswith("indexer_test"):
+                tables_to_keep.extend([rt.tablename,
+                                       "%s_history" % rt.tablename])
+        new_diff = []
+        for line in diff:
+            if len(line) >= 2:
+                item = line[1]
+                # NOTE(sileht): skip resource types created for tests
+                if (isinstance(item, sa.Table)
+                        and item.name in tables_to_keep):
+                    continue
+            new_diff.append(line)
+        return new_diff

@@ -17,6 +17,7 @@ import datetime
 import uuid
 
 import pandas
+from stevedore import extension
 
 from gnocchi import aggregates
 from gnocchi.aggregates import moving_stats
@@ -26,6 +27,12 @@ from gnocchi import utils
 
 
 class TestAggregates(tests_base.TestCase):
+
+    def setUp(self):
+        super(TestAggregates, self).setUp()
+        mgr = extension.ExtensionManager('gnocchi.aggregates',
+                                         invoke_on_load=True)
+        self.custom_agg = dict((x.name, x.obj) for x in mgr)
 
     def test_extension_dict(self):
         self.assertIsInstance(self.custom_agg['moving-average'],
@@ -51,7 +58,7 @@ class TestAggregates(tests_base.TestCase):
     def _test_create_metric_and_data(self, data, spacing):
         metric = storage.Metric(
             uuid.uuid4(), self.archive_policies['medium'])
-        start_time = datetime.datetime(2014, 1, 1, 12)
+        start_time = utils.datetime_utc(2014, 1, 1, 12)
         incr = datetime.timedelta(seconds=spacing)
         measures = [storage.Measure(start_time + incr * n, val)
                     for n, val in enumerate(data)]
@@ -59,7 +66,9 @@ class TestAggregates(tests_base.TestCase):
                                  str(uuid.uuid4()), str(uuid.uuid4()),
                                  'medium')
         self.storage.add_measures(metric, measures)
-        self.storage.process_background_tasks(self.index, sync=True)
+        metrics = self.storage.list_metric_with_measures_to_process(
+            None, None, full=True)
+        self.storage.process_background_tasks(self.index, metrics, sync=True)
 
         return metric
 

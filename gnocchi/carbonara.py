@@ -18,19 +18,27 @@
 
 import datetime
 import functools
+import itertools
 import logging
+import math
 import numbers
-import operator
+import random
 import re
+import struct
+import time
 
 import iso8601
 import lz4
-import msgpack
 import pandas
 import six
 
 from gnocchi import utils
 
+# NOTE(sileht): pandas relies on time.strptime()
+# and often triggers http://bugs.python.org/issue7980
+# its dues to our heavy threads usage, this is the workaround
+# to ensure the module is correctly loaded before we use really it.
+time.strptime("2016-02-19", "%Y-%m-%d")
 
 LOG = logging.getLogger(__name__)
 
@@ -43,6 +51,15 @@ class NoDeloreanAvailable(Exception):
         self.bad_timestamp = bad_timestamp
         super(NoDeloreanAvailable, self).__init__(
             "%s is before %s" % (bad_timestamp, first_timestamp))
+
+
+class BeforeEpochError(Exception):
+    """Error raised when a timestamp before Epoch is used."""
+
+    def __init__(self, timestamp):
+        self.timestamp = timestamp
+        super(BeforeEpochError, self).__init__(
+            "%s is before Epoch" % timestamp)
 
 
 class UnAggregableTimeseries(Exception):
@@ -60,17 +77,12 @@ class UnknownAggregationMethod(Exception):
             "Unknown aggregation method `%s'" % agg)
 
 
-class SerializableMixin(object):
-
-    @classmethod
-    def unserialize(cls, data):
-        return cls.from_dict(msgpack.loads(data, encoding='utf-8'))
-
-    def serialize(self):
-        return msgpack.dumps(self.to_dict())
+def round_timestamp(ts, freq):
+    return pandas.Timestamp(
+        (pandas.Timestamp(ts).value // freq) * freq)
 
 
-class TimeSerie(SerializableMixin):
+class TimeSerie(object):
     """A representation of series of a timestamp with a value.
 
     Duplicate timestamps are not allowed and will be filtered to use the
@@ -114,42 +126,11 @@ class TimeSerie(SerializableMixin):
 
     @staticmethod
     def _timestamps_and_values_from_dict(values):
-        v = tuple(
-            zip(*dict(
-                (pandas.Timestamp(k), v)
-                for k, v in six.iteritems(values)).items()))
+        timestamps = pandas.to_datetime(list(values.keys()), unit='ns')
+        v = list(values.values())
         if v:
-            return v
+            return timestamps, v
         return (), ()
-
-    @classmethod
-    def from_dict(cls, d):
-        """Build a time series from a dict.
-
-        The dict format must be datetime as key and values as values.
-
-        :param d: The dict.
-        :returns: A TimeSerie object
-        """
-        return cls.from_data(
-            *cls._timestamps_and_values_from_dict(d['values']))
-
-    def to_dict(self):
-        return {
-            'values': dict((timestamp.value, float(v))
-                           for timestamp, v
-                           in six.iteritems(self.ts.dropna())),
-        }
-
-    @staticmethod
-    def _serialize_time_period(value):
-        if value:
-            return value.nanos / 10e8
-
-    @staticmethod
-    def _round_timestamp(ts, freq):
-        return pandas.Timestamp(
-            (pandas.Timestamp(ts).value // freq) * freq)
 
     @staticmethod
     def _to_offset(value):
@@ -170,6 +151,15 @@ class TimeSerie(SerializableMixin):
             return self.ts.index[-1]
         except IndexError:
             return
+
+    def group_serie(self, granularity, start=None):
+        # NOTE(jd) Our whole serialization system is based on Epoch, and we
+        # store unsigned integer, so we can't store anything before Epoch.
+        # Sorry!
+        if self.ts.index[0].value < 0:
+            raise BeforeEpochError(self.ts.index[0])
+        return self.ts[start:].groupby(functools.partial(
+            round_timestamp, freq=granularity * 10e8))
 
 
 class BoundTimeSerie(TimeSerie):
@@ -208,9 +198,9 @@ class BoundTimeSerie(TimeSerie):
 
     def set_values(self, values, before_truncate_callback=None,
                    ignore_too_old_timestamps=False):
+        # NOTE: values must be sorted when passed in.
         if self.block_size is not None and not self.ts.empty:
-            values = sorted(values, key=operator.itemgetter(0))
-            first_block_timestamp = self._first_block_timestamp()
+            first_block_timestamp = self.first_block_timestamp()
             if ignore_too_old_timestamps:
                 for index, (timestamp, value) in enumerate(values):
                     if timestamp >= first_block_timestamp:
@@ -230,31 +220,100 @@ class BoundTimeSerie(TimeSerie):
             before_truncate_callback(self)
         self._truncate()
 
+    _SERIALIZATION_TIMESTAMP_VALUE_LEN = struct.calcsize("<Qd")
+
     @classmethod
-    def from_dict(cls, d):
-        """Build a time series from a dict.
+    def unserialize(cls, data, block_size, back_window):
+        uncompressed = lz4.loads(data)
+        nb_points = (
+            len(uncompressed) // cls._SERIALIZATION_TIMESTAMP_VALUE_LEN
+        )
+        deserial = struct.unpack("<" + "Q" * nb_points + "d" * nb_points,
+                                 uncompressed)
+        start = deserial[0]
+        timestamps = [start]
+        for delta in itertools.islice(deserial, 1, nb_points):
+            ts = start + delta
+            timestamps.append(ts)
+            start = ts
+        return cls.from_data(
+            pandas.to_datetime(timestamps, unit='ns'),
+            deserial[nb_points:],
+            block_size=block_size,
+            back_window=back_window)
 
-        The dict format must be datetime as key and values as values.
+    def serialize(self):
+        # NOTE(jd) Use a double delta encoding for timestamps
+        timestamps = [self.first.value]
+        start = self.first.value
+        for i in self.ts.index[1:]:
+            v = i.value
+            timestamps.append(v - start)
+            start = v
+        values = self.ts.values.tolist()
+        return lz4.dumps(struct.pack(
+            '<' + 'Q' * len(timestamps) + 'd' * len(values),
+            *(timestamps + values)))
 
-        :param d: The dict.
-        :returns: A TimeSerie object
-        """
-        timestamps, values = cls._timestamps_and_values_from_dict(d['values'])
-        return cls.from_data(timestamps, values,
-                             block_size=d.get('block_size'),
-                             back_window=d.get('back_window'))
+    @classmethod
+    def benchmark(cls):
+        """Run a speed benchmark!"""
+        points = SplitKey.POINTS_PER_SPLIT
+        serialize_times = 50
 
-    def to_dict(self):
-        basic = super(BoundTimeSerie, self).to_dict()
-        basic.update({
-            'block_size': self._serialize_time_period(self.block_size),
-            'back_window': self.back_window,
-        })
-        return basic
+        now = datetime.datetime(2015, 4, 3, 23, 11)
 
-    def _first_block_timestamp(self):
-        rounded = self._round_timestamp(self.ts.index[-1],
-                                        self.block_size.delta.value)
+        print(cls.__name__)
+        print("=" * len(cls.__name__))
+
+        for title, values in [
+                ("Simple continuous range", six.moves.range(points)),
+                ("All 0", [float(0)] * points),
+                ("All 1", [float(1)] * points),
+                ("0 and 1", [0, 1] * (points // 2)),
+                ("1 and 0 random",
+                 [random.randint(0, 1)
+                  for x in six.moves.range(points)]),
+                ("Small number random pos/neg",
+                 [random.randint(-100000, 10000)
+                  for x in six.moves.range(points)]),
+                ("Small number random pos",
+                 [random.randint(0, 20000) for x in six.moves.range(points)]),
+                ("Small number random neg",
+                 [random.randint(-20000, 0) for x in six.moves.range(points)]),
+                ("Sin(x)", map(math.sin, six.moves.range(points))),
+                ("random ", [random.random()
+                             for x in six.moves.range(points)]),
+        ]:
+            print(title)
+            pts = pandas.Series(values,
+                                [now + datetime.timedelta(
+                                    seconds=i * random.randint(1, 10),
+                                    microseconds=random.randint(1, 999999))
+                                 for i in six.moves.range(points)])
+            ts = cls(ts=pts)
+            t0 = time.time()
+            for i in six.moves.range(serialize_times):
+                s = ts.serialize()
+            t1 = time.time()
+            print("  Serialization speed: %.2f MB/s"
+                  % (((points * 2 * 8)
+                      / ((t1 - t0) / serialize_times)) / (1024.0 * 1024.0)))
+            print("   Bytes per point: %.2f" % (len(s) / float(points)))
+
+            t0 = time.time()
+            for i in six.moves.range(serialize_times):
+                cls.unserialize(s, 1, 1)
+            t1 = time.time()
+            print("  Unserialization speed: %.2f MB/s"
+                  % (((points * 2 * 8)
+                      / ((t1 - t0) / serialize_times)) / (1024.0 * 1024.0)))
+
+    def first_block_timestamp(self):
+        """Return the timestamp of the first block."""
+        rounded = round_timestamp(self.ts.index[-1],
+                                  self.block_size.delta.value)
+
         return rounded - (self.block_size * self.back_window)
 
     def _truncate(self):
@@ -263,17 +322,78 @@ class BoundTimeSerie(TimeSerie):
             # Change that to remove the amount of block needed to have
             # the size <= max_size. A block is a number of "seconds" (a
             # timespan)
-            self.ts = self.ts[self._first_block_timestamp():]
+            self.ts = self.ts[self.first_block_timestamp():]
+
+
+class SplitKey(pandas.Timestamp):
+    """A class representing a split key.
+
+    A split key is basically a timestamp that can be used to split
+    `AggregatedTimeSerie` objects in multiple parts. Each part will contain
+    `SplitKey.POINTS_PER_SPLIT` points. The split key for a given granularity
+    are regularly spaced.
+    """
+
+    POINTS_PER_SPLIT = 3600
+
+    @classmethod
+    def _init(cls, value, sampling):
+        # NOTE(jd) This should be __init__ but it does not work, because of…
+        # Pandas, Cython, whatever.
+        self = cls(value)
+        self._carbonara_sampling = sampling
+        return self
+
+    @classmethod
+    def from_timestamp_and_sampling(cls, timestamp, sampling):
+        return cls._init(
+            round_timestamp(
+                timestamp, freq=sampling * cls.POINTS_PER_SPLIT * 10e8),
+            sampling)
+
+    @classmethod
+    def from_key_string(cls, keystr, sampling):
+        return cls._init(float(keystr) * 10e8, sampling)
+
+    def __next__(self):
+        """Get the split key of the next split.
+
+        :return: A `SplitKey` object.
+        """
+        return self._init(
+            self + datetime.timedelta(
+                seconds=(self.POINTS_PER_SPLIT * self._carbonara_sampling)),
+            self._carbonara_sampling)
+
+    next = __next__
+
+    def __iter__(self):
+        return self
+
+    def __str__(self):
+        return str(float(self))
+
+    def __float__(self):
+        ts = self.to_datetime()
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=iso8601.iso8601.UTC)
+        return utils.datetime_to_unix(ts)
+
+    def __repr__(self):
+        return "<%s: %s / %fs>" % (self.__class__.__name__,
+                                   pandas.Timestamp.__repr__(self),
+                                   self._carbonara_sampling)
 
 
 class AggregatedTimeSerie(TimeSerie):
 
     _AGG_METHOD_PCT_RE = re.compile(r"([1-9][0-9]?)pct")
 
-    POINTS_PER_SPLIT = 14400
+    PADDED_SERIAL_LEN = struct.calcsize("<?d")
+    COMPRESSED_SERIAL_LEN = struct.calcsize("<Hd")
 
-    def __init__(self, sampling, ts=None, max_size=None,
-                 aggregation_method='mean'):
+    def __init__(self, sampling, aggregation_method,
+                 ts=None, max_size=None):
         """A time serie that is downsampled.
 
         Used to represent the downsampled timeserie for a single
@@ -282,65 +402,62 @@ class AggregatedTimeSerie(TimeSerie):
         """
         super(AggregatedTimeSerie, self).__init__(ts)
 
-        m = self._AGG_METHOD_PCT_RE.match(aggregation_method)
-
-        if m:
-            self.q = float(m.group(1)) / 100
-            self.aggregation_method_func_name = 'quantile'
-        else:
-            if not hasattr(pandas.core.groupby.SeriesGroupBy,
-                           aggregation_method):
-                raise UnknownAggregationMethod(aggregation_method)
-            self.aggregation_method_func_name = aggregation_method
+        self.aggregation_method_func_name, self.q = self._get_agg_method(
+            aggregation_method)
 
         self.sampling = self._to_offset(sampling).nanos / 10e8
         self.max_size = max_size
         self.aggregation_method = aggregation_method
+        self._truncate(quick=True)
 
     @classmethod
-    def from_data(cls, sampling, timestamps=None, values=None,
-                  max_size=None, aggregation_method='mean'):
-        return cls(ts=pandas.Series(values, timestamps),
-                   max_size=max_size, sampling=sampling,
-                   aggregation_method=aggregation_method)
-
-    @classmethod
-    def get_split_key_datetime(cls, timestamp, sampling):
-        return cls._round_timestamp(
-            timestamp, freq=sampling * cls.POINTS_PER_SPLIT * 10e8)
+    def from_data(cls, sampling, aggregation_method, timestamps=None,
+                  values=None, max_size=None):
+        return cls(sampling=sampling,
+                   aggregation_method=aggregation_method,
+                   ts=pandas.Series(values, timestamps),
+                   max_size=max_size)
 
     @staticmethod
-    def _split_key_to_string(timestamp):
-        ts = timestamp.to_datetime()
-        if ts.tzinfo is None:
-            ts = ts.replace(tzinfo=iso8601.iso8601.UTC)
-        return str(utils.datetime_to_unix(ts))
-
-    @classmethod
-    def get_split_key(cls, timestamp, sampling):
-        return cls._split_key_to_string(
-            cls.get_split_key_datetime(timestamp, sampling))
+    def _get_agg_method(aggregation_method):
+        q = None
+        m = AggregatedTimeSerie._AGG_METHOD_PCT_RE.match(aggregation_method)
+        if m:
+            q = float(m.group(1)) / 100
+            aggregation_method_func_name = 'quantile'
+        else:
+            if not hasattr(pandas.core.groupby.SeriesGroupBy,
+                           aggregation_method):
+                raise UnknownAggregationMethod(aggregation_method)
+            aggregation_method_func_name = aggregation_method
+        return aggregation_method_func_name, q
 
     def split(self):
         groupby = self.ts.groupby(functools.partial(
-            self.get_split_key_datetime, sampling=self.sampling))
-        keys = sorted(groupby.groups.keys())
-        for i, ts in enumerate(keys):
-            if i + 1 == len(keys):
-                yield self._split_key_to_string(ts), TimeSerie(self.ts[ts:])
-            elif i + 1 < len(keys):
-                t = self.ts[ts:keys[i + 1]]
-                del t[t.index[-1]]
-                yield self._split_key_to_string(ts), TimeSerie(t)
+            SplitKey.from_timestamp_and_sampling, sampling=self.sampling))
+        for group, ts in groupby:
+            yield (SplitKey._init(group, self.sampling),
+                   AggregatedTimeSerie(self.sampling, self.aggregation_method,
+                                       ts))
 
     @classmethod
-    def from_timeseries(cls, timeseries, sampling, max_size=None,
-                        aggregation_method='mean'):
+    def from_timeseries(cls, timeseries, sampling, aggregation_method,
+                        max_size=None):
         ts = pandas.Series()
         for t in timeseries:
             ts = ts.combine_first(t.ts)
-        return cls(ts=ts, sampling=sampling, max_size=max_size,
-                   aggregation_method=aggregation_method)
+        return cls(sampling=sampling,
+                   aggregation_method=aggregation_method,
+                   ts=ts, max_size=max_size)
+
+    @classmethod
+    def from_grouped_serie(cls, grouped_serie, sampling, aggregation_method,
+                           max_size=None):
+        agg_name, q = cls._get_agg_method(aggregation_method)
+        return cls(sampling, aggregation_method,
+                   ts=cls._resample_grouped(grouped_serie, agg_name,
+                                            q).dropna(),
+                   max_size=max_size)
 
     def __eq__(self, other):
         return (isinstance(other, AggregatedTimeSerie)
@@ -358,93 +475,121 @@ class AggregatedTimeSerie(TimeSerie):
             self.aggregation_method,
         )
 
+    @staticmethod
+    def is_compressed(serialized_data):
+        """Check whatever the data was serialized with compression."""
+        return six.indexbytes(serialized_data, 0) == ord("c")
+
     @classmethod
-    def from_dict(cls, d):
-        """Build a time series from a dict.
+    def unserialize(cls, data, start, agg_method, sampling):
+        x, y = [], []
+        start = float(start)
+        if data:
+            if cls.is_compressed(data):
+                # Compressed format
+                uncompressed = lz4.loads(memoryview(data)[1:].tobytes())
+                nb_points = len(uncompressed) // cls.COMPRESSED_SERIAL_LEN
+                deserial = struct.unpack(
+                    '<' + 'H' * nb_points + 'd' * nb_points,
+                    uncompressed)
+                for delta in itertools.islice(deserial, nb_points):
+                    ts = start + (delta * sampling)
+                    y.append(ts)
+                    start = ts
+                x = deserial[nb_points:]
+            else:
+                # Padded format
+                nb_points = len(data) // cls.PADDED_SERIAL_LEN
+                # NOTE(gordc): use '<' for standardized
+                # little-endian byte order
+                deserial = struct.unpack('<' + '?d' * nb_points, data)
+                # alternating split into 2 list and drop items with False flag
+                for i, val in itertools.compress(
+                        six.moves.zip(six.moves.range(nb_points),
+                                      deserial[1::2]),
+                        deserial[::2]):
+                    x.append(val)
+                    y.append(start + (i * sampling))
 
-        The dict format must be datetime as key and values as values.
+            y = pandas.to_datetime(y, unit='s')
+        return cls.from_data(sampling, agg_method, y, x)
 
-        :param d: The dict.
-        :returns: A TimeSerie object
+    def get_split_key(self, timestamp=None):
+        """Return the split key for a particular timestamp.
+
+        :param timestamp: If None, the first timestamp of the timeserie
+                          is used.
+        :return: A SplitKey object.
         """
-        sampling = d.get('sampling')
-        if 'first_timestamp' in d:
-            prev_timestamp = pandas.Timestamp(d.get('first_timestamp') * 10e8)
-            timestamps = []
-            for delta in d.get('timestamps'):
-                prev_timestamp = datetime.timedelta(
-                    seconds=delta * sampling) + prev_timestamp
-                timestamps.append(prev_timestamp)
-        else:
-            # migrate from v1.3, remove with TimeSerieArchive
-            timestamps, d['values'] = (
-                cls._timestamps_and_values_from_dict(d['values']))
+        if timestamp is None:
+            timestamp = self.first
+        return SplitKey.from_timestamp_and_sampling(
+            timestamp, self.sampling)
 
-        return cls.from_data(
-            timestamps=timestamps,
-            values=d.get('values'),
-            max_size=d.get('max_size'),
-            sampling=sampling,
-            aggregation_method=d.get('aggregation_method', 'mean'))
+    def serialize(self, start, compressed=True):
+        """Serialize an aggregated timeserie.
 
-    def to_dict(self):
-        if self.ts.empty:
+        The serialization starts with a byte that indicate the serialization
+        format: 'c' for compressed format, '\x00' or '\x01' for uncompressed
+        format. Both format can be unserialized using the `unserialize` method.
+
+        The offset returned indicates at which offset the data should be
+        written from. In the case of compressed data, this is always 0.
+
+        :param start: Timestamp to start serialization at.
+        :param compressed: Serialize in a compressed format.
+        :return: a tuple of (offset, data)
+
+        """
+        if not self.ts.index.is_monotonic:
+            self.ts = self.ts.sort_index()
+        offset_div = self.sampling * 10e8
+        start = pandas.Timestamp(start).value
+        # calculate how many seconds from start the series runs until and
+        # initialize list to store alternating delimiter, float entries
+        if compressed:
+            # NOTE(jd) Use a double delta encoding for timestamps
             timestamps = []
-            values = []
-            first_timestamp = 0
-        else:
-            first_timestamp = float(
-                self.get_split_key(self.ts.index[0], self.sampling))
-            timestamps = []
-            prev_timestamp = pandas.Timestamp(
-                first_timestamp * 10e8).to_pydatetime()
-            # Use double delta encoding for timestamps
             for i in self.ts.index:
-                # Convert to pydatetime because it's faster to compute than
-                # Pandas' objects
-                asdt = i.to_pydatetime()
-                timestamps.append(
-                    int((asdt - prev_timestamp).total_seconds()
-                        / self.sampling))
-                prev_timestamp = asdt
+                v = i.value
+                timestamps.append(int((v - start) // offset_div))
+                start = v
             values = self.ts.values.tolist()
+            return None, b"c" + lz4.dumps(struct.pack(
+                '<' + 'H' * len(timestamps) + 'd' * len(values),
+                *(timestamps + values)))
+        # NOTE(gordc): this binary serializes series based on the split
+        # time. the format is 1B True/False flag which denotes whether
+        # subsequent 8B is a real float or zero padding. every 9B
+        # represents one second from start time. this is intended to be run
+        # on data already split. ie. False,0,True,0 serialization means
+        # start datapoint is padding, and 1s after start time, the
+        # aggregate value is 0. calculate how many seconds from start the
+        # series runs until and initialize list to store alternating
+        # delimiter, float entries
+        first = self.first.value  # NOTE(jd) needed because faster
+        e_offset = int(
+            (self.last.value - first) // offset_div) + 1
+        serial = [False] * e_offset * 2
+        for i, v in self.ts.iteritems():
+            # overwrite zero padding with real points and set flag True
+            loc = int((i.value - first) // offset_div) * 2
+            serial[loc] = True
+            serial[loc + 1] = v
+        offset = int((first - start) // offset_div) * self.PADDED_SERIAL_LEN
+        return offset, struct.pack('<' + '?d' * e_offset, *serial)
 
-        return {
-            'first_timestamp': first_timestamp,
-            'aggregation_method': self.aggregation_method,
-            'max_size': self.max_size,
-            'sampling': self.sampling,
-            'timestamps': timestamps,
-            'values': values,
-        }
-
-    @classmethod
-    def unserialize(cls, data):
-        return cls.from_dict(msgpack.loads(lz4.loads(data), encoding='utf-8'))
-
-    def serialize(self):
-        return lz4.dumps(msgpack.dumps(self.to_dict()))
-
-    def _truncate(self):
+    def _truncate(self, quick=False):
         """Truncate the timeserie."""
         if self.max_size is not None:
             # Remove empty points if any that could be added by aggregation
-            self.ts = self.ts.dropna()[-self.max_size:]
+            self.ts = (self.ts[-self.max_size:] if quick
+                       else self.ts.dropna()[-self.max_size:])
 
-    def _resample(self, after):
-        # Group by the sampling, and then apply the aggregation method on
-        # the points after `after'
-        groupedby = self.ts[after:].groupby(
-            functools.partial(self._round_timestamp,
-                              freq=self.sampling * 10e8))
-        agg_func = getattr(groupedby, self.aggregation_method_func_name)
-        if self.aggregation_method_func_name == 'quantile':
-            aggregated = agg_func(self.q)
-        else:
-            aggregated = agg_func()
-        # Now combine the result with the rest of the point – everything
-        # that is before `after'
-        self.ts = aggregated.combine_first(self.ts[:after][:-1])
+    @staticmethod
+    def _resample_grouped(grouped_serie, agg_name, q=None):
+        agg_func = getattr(grouped_serie, agg_name)
+        return agg_func(q) if agg_name == 'quantile' else agg_func()
 
     def fetch(self, from_timestamp=None, to_timestamp=None):
         """Fetch aggregated time value.
@@ -457,7 +602,7 @@ class AggregatedTimeSerie(TimeSerie):
         if from_timestamp is None:
             from_ = None
         else:
-            from_ = self._round_timestamp(from_timestamp, self.sampling * 10e8)
+            from_ = round_timestamp(from_timestamp, self.sampling * 10e8)
         points = self[from_:to_timestamp]
         try:
             # Do not include stop timestamp
@@ -468,32 +613,88 @@ class AggregatedTimeSerie(TimeSerie):
                 for timestamp, value
                 in six.iteritems(points)]
 
-    def update(self, ts):
-        if ts.ts.empty:
-            return
-        ts.ts = self.clean_ts(ts.ts)
-        index = ts.ts.index
-        first_timestamp = index[0]
-        last_timestamp = index[-1]
-        # Build a new time serie excluding all data points in the range of the
-        # timeserie passed as argument
-        new_ts = self.ts.drop(self.ts[first_timestamp:last_timestamp].index)
+    def merge(self, ts):
+        """Merge a timeserie into this one.
 
-        # Build a new timeserie where we replaced the timestamp range covered
-        # by the timeserie passed as argument
-        self.ts = ts.ts.combine_first(new_ts)
+        This is equivalent to `update` but is faster as they are is no
+        resampling. Be careful on what you merge.
+        """
+        self.ts = self.ts.combine_first(ts.ts)
 
-        # Resample starting from the first timestamp we received
-        # TODO(jd) So this only works correctly because we expect that we are
-        # not going to replace a range in the middle of our timeserie. So we re
-        # resample EVERYTHING FROM first timestamp. We should rather resample
-        # from first timestamp AND TO LAST TIMESTAMP!
-        self._resample(first_timestamp)
-        self._truncate()
+    @classmethod
+    def benchmark(cls):
+        """Run a speed benchmark!"""
+        points = SplitKey.POINTS_PER_SPLIT
+        sampling = 5
+        serialize_times = 50
+
+        now = datetime.datetime(2015, 4, 3, 23, 11)
+
+        print(cls.__name__)
+        print("=" * len(cls.__name__))
+
+        for title, values in [
+                ("Simple continuous range", six.moves.range(points)),
+                ("All 0", [float(0)] * points),
+                ("All 1", [float(1)] * points),
+                ("0 and 1", [0, 1] * (points // 2)),
+                ("1 and 0 random",
+                 [random.randint(0, 1)
+                  for x in six.moves.range(points)]),
+                ("Small number random pos/neg",
+                 [random.randint(-100000, 10000)
+                  for x in six.moves.range(points)]),
+                ("Small number random pos",
+                 [random.randint(0, 20000) for x in six.moves.range(points)]),
+                ("Small number random neg",
+                 [random.randint(-20000, 0) for x in six.moves.range(points)]),
+                ("Sin(x)", map(math.sin, six.moves.range(points))),
+                ("random ", [random.random()
+                             for x in six.moves.range(points)]),
+        ]:
+            print(title)
+            pts = pandas.Series(values,
+                                [now + datetime.timedelta(seconds=i*sampling)
+                                 for i in six.moves.range(points)])
+            ts = cls(ts=pts, sampling=sampling, aggregation_method='mean')
+            t0 = time.time()
+            key = ts.get_split_key()
+            for i in six.moves.range(serialize_times):
+                e, s = ts.serialize(key, compressed=False)
+            t1 = time.time()
+            print("  Uncompressed serialization speed: %.2f MB/s"
+                  % (((points * 2 * 8)
+                      / ((t1 - t0) / serialize_times)) / (1024.0 * 1024.0)))
+            print("   Bytes per point: %.2f" % (len(s) / float(points)))
+
+            t0 = time.time()
+            for i in six.moves.range(serialize_times):
+                cls.unserialize(s, key, 'mean', sampling)
+            t1 = time.time()
+            print("  Unserialization speed: %.2f MB/s"
+                  % (((points * 2 * 8)
+                      / ((t1 - t0) / serialize_times)) / (1024.0 * 1024.0)))
+
+            t0 = time.time()
+            for i in six.moves.range(serialize_times):
+                o, s = ts.serialize(key, compressed=True)
+            t1 = time.time()
+            print("  Compressed serialization speed: %.2f MB/s"
+                  % (((points * 2 * 8)
+                      / ((t1 - t0) / serialize_times)) / (1024.0 * 1024.0)))
+            print("   Bytes per point: %.2f" % (len(s) / float(points)))
+
+            t0 = time.time()
+            for i in six.moves.range(serialize_times):
+                cls.unserialize(s, key, 'mean', sampling)
+            t1 = time.time()
+            print("  Uncompression speed: %.2f MB/s"
+                  % (((points * 2 * 8)
+                      / ((t1 - t0) / serialize_times)) / (1024.0 * 1024.0)))
 
     @staticmethod
-    def aggregated(timeseries, from_timestamp=None, to_timestamp=None,
-                   aggregation='mean', needed_percent_of_overlap=100.0):
+    def aggregated(timeseries, aggregation, from_timestamp=None,
+                   to_timestamp=None, needed_percent_of_overlap=100.0):
 
         index = ['timestamp', 'granularity']
         columns = ['timestamp', 'granularity', 'value']
@@ -591,70 +792,10 @@ class AggregatedTimeSerie(TimeSerie):
                 for __, timestamp, granularity, value in points]
 
 
-class TimeSerieArchive(SerializableMixin):
-
-    def __init__(self, agg_timeseries):
-        """A raw data buffer and a collection of downsampled timeseries.
-
-        Used to represent the set of AggregatedTimeSeries for the range of
-        granularities supported for a metric (for a particular aggregation
-        function).
-
-        """
-        self.agg_timeseries = sorted(agg_timeseries,
-                                     key=operator.attrgetter("sampling"))
-
-    @classmethod
-    def from_definitions(cls, definitions, aggregation_method='mean'):
-        """Create a new collection of archived time series.
-
-        :param definition: A list of tuple (sampling, max_size)
-        :param aggregation_method: Aggregation function to use.
-        """
-        # Limit the main timeserie to a timespan mapping
-        return cls(
-            [AggregatedTimeSerie(
-                max_size=size,
-                sampling=sampling,
-                aggregation_method=aggregation_method)
-             for sampling, size in definitions]
-        )
-
-    def fetch(self, from_timestamp=None, to_timestamp=None,
-              timeserie_filter=None):
-        """Fetch aggregated time value.
-
-        Returns a sorted list of tuples (timestamp, granularity, value).
-        """
-        result = []
-        end_timestamp = to_timestamp
-        for ts in reversed(self.agg_timeseries):
-            if timeserie_filter and not timeserie_filter(ts):
-                continue
-            points = ts[from_timestamp:to_timestamp]
-            try:
-                # Do not include stop timestamp
-                del points[end_timestamp]
-            except KeyError:
-                pass
-            result.extend([(timestamp, ts.sampling, value)
-                           for timestamp, value
-                           in six.iteritems(points)])
-        return result
-
-    def update(self, timeserie):
-        for agg in self.agg_timeseries:
-            agg.update(timeserie)
-
-    def to_dict(self):
-        return {
-            "archives": [ts.to_dict() for ts in self.agg_timeseries],
-        }
-
-    def __eq__(self, other):
-        return (isinstance(other, TimeSerieArchive)
-                and self.agg_timeseries == other.agg_timeseries)
-
-    @classmethod
-    def from_dict(cls, d):
-        return cls([AggregatedTimeSerie.from_dict(a) for a in d['archives']])
+if __name__ == '__main__':
+    import sys
+    args = sys.argv[1:]
+    if not args or "--boundtimeserie" in args:
+        BoundTimeSerie.benchmark()
+    if not args or "--aggregatedtimeserie" in args:
+        AggregatedTimeSerie.benchmark()

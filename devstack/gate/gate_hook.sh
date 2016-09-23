@@ -17,11 +17,16 @@
 STORAGE_DRIVER="$1"
 SQL_DRIVER="$2"
 
-ENABLED_SERVICES="key,gnocchi-api,gnocchi-metricd,"
+ENABLED_SERVICES="key,gnocchi-api,gnocchi-metricd,tempest,"
+
+# Use efficient wsgi web server
+DEVSTACK_LOCAL_CONFIG+=$'\nexport GNOCCHI_DEPLOY=uwsgi'
+DEVSTACK_LOCAL_CONFIG+=$'\nexport KEYSTONE_DEPLOY=uwsgi'
 
 export DEVSTACK_GATE_INSTALL_TESTONLY=1
 export DEVSTACK_GATE_NO_SERVICES=1
-export DEVSTACK_GATE_TEMPEST=0
+export DEVSTACK_GATE_TEMPEST=1
+export DEVSTACK_GATE_TEMPEST_NOTESTS=1
 export DEVSTACK_GATE_EXERCISES=0
 export KEEP_LOCALRC=1
 
@@ -36,11 +41,7 @@ case $STORAGE_DRIVER in
         DEVSTACK_GATE_TEMPEST+=$'\nexport SWIFT_USE_MOD_WSGI=True'
         ;;
     ceph)
-        ENABLED_SERVICES+="ceph"
         DEVSTACK_LOCAL_CONFIG+=$'\nexport GNOCCHI_STORAGE_BACKEND=ceph'
-        ;;
-    influxdb)
-        DEVSTACK_LOCAL_CONFIG+=$'\nexport GNOCCHI_STORAGE_BACKEND=influxdb'
         ;;
 esac
 

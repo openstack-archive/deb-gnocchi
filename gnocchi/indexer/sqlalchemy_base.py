@@ -2,8 +2,6 @@
 #
 # Copyright © 2014-2015 eNovance
 #
-# Authors: Julien Danjou <julien@danjou.info>
-#
 # Licensed under the Apache License, Version 2.0 (the "License"); you may
 # not use this file except in compliance with the License. You may obtain
 # a copy of the License at
@@ -32,6 +30,8 @@ import sqlalchemy_utils
 
 from gnocchi import archive_policy
 from gnocchi import indexer
+from gnocchi.indexer import sqlalchemy_legacy_resources as legacy
+from gnocchi import resource_type
 from gnocchi import storage
 from gnocchi import utils
 
@@ -146,7 +146,7 @@ class Metric(Base, GnocchiBase, storage.Metric):
         sqlalchemy.ForeignKey(
             'archive_policy.name',
             ondelete="RESTRICT",
-            name="fk_metric_archive_policy_name_archive_policy_name"),
+            name="fk_metric_ap_name_ap_name"),
         nullable=False)
     archive_policy = sqlalchemy.orm.relationship(ArchivePolicy, lazy="joined")
     created_by_user_id = sqlalchemy.Column(
@@ -159,6 +159,7 @@ class Metric(Base, GnocchiBase, storage.Metric):
                               ondelete="SET NULL",
                               name="fk_metric_resource_id_resource_id"))
     name = sqlalchemy.Column(sqlalchemy.String(255))
+    unit = sqlalchemy.Column(sqlalchemy.String(31))
     status = sqlalchemy.Column(sqlalchemy.Enum('active', 'delete',
                                                name="metric_status_enum"),
                                nullable=False,
@@ -170,6 +171,7 @@ class Metric(Base, GnocchiBase, storage.Metric):
             "created_by_user_id": self.created_by_user_id,
             "created_by_project_id": self.created_by_project_id,
             "name": self.name,
+            "unit": self.unit,
         }
         unloaded = sqlalchemy.inspect(self).unloaded
         if 'resource' in unloaded:
@@ -193,10 +195,75 @@ class Metric(Base, GnocchiBase, storage.Metric):
                  and self.created_by_user_id == other.created_by_user_id
                  and self.created_by_project_id == other.created_by_project_id
                  and self.name == other.name
+                 and self.unit == other.unit
                  and self.resource_id == other.resource_id)
                 or (storage.Metric.__eq__(self, other)))
 
     __hash__ = storage.Metric.__hash__
+
+
+RESOURCE_TYPE_SCHEMA_MANAGER = resource_type.ResourceTypeSchemaManager(
+    "gnocchi.indexer.sqlalchemy.resource_type_attribute")
+
+
+def get_legacy_resource_types():
+    resource_types = []
+    for name, attributes in legacy.ceilometer_resources.items():
+        tablename = legacy.ceilometer_tablenames.get(name, name)
+        attrs = RESOURCE_TYPE_SCHEMA_MANAGER.attributes_from_dict(
+            attributes)
+        resource_types.append(ResourceType(name=name,
+                                           tablename=tablename,
+                                           state="creating",
+                                           attributes=attrs))
+    return resource_types
+
+
+class ResourceTypeAttributes(sqlalchemy_utils.JSONType):
+    def process_bind_param(self, attributes, dialect):
+        return super(ResourceTypeAttributes, self).process_bind_param(
+            attributes.jsonify(), dialect)
+
+    def process_result_value(self, value, dialect):
+        attributes = super(ResourceTypeAttributes, self).process_result_value(
+            value, dialect)
+        return RESOURCE_TYPE_SCHEMA_MANAGER.attributes_from_dict(attributes)
+
+
+class ResourceType(Base, GnocchiBase, resource_type.ResourceType):
+    __tablename__ = 'resource_type'
+    __table_args__ = (
+        sqlalchemy.UniqueConstraint("tablename",
+                                    name="uniq_resource_type0tablename"),
+        COMMON_TABLES_ARGS,
+    )
+
+    name = sqlalchemy.Column(sqlalchemy.String(255), primary_key=True,
+                             nullable=False)
+    tablename = sqlalchemy.Column(sqlalchemy.String(35), nullable=False)
+    attributes = sqlalchemy.Column(ResourceTypeAttributes)
+    state = sqlalchemy.Column(sqlalchemy.Enum("active", "creating",
+                                              "creation_error", "deleting",
+                                              "deletion_error", "updating",
+                                              "updating_error",
+                                              name="resource_type_state_enum"),
+                              nullable=False,
+                              server_default="creating")
+    updated_at = sqlalchemy.Column(PreciseTimestamp, nullable=False,
+                                   # NOTE(jd): We would like to use
+                                   # sqlalchemy.func.now, but we can't
+                                   # because the type of PreciseTimestamp in
+                                   # MySQL is not a Timestamp, so it would
+                                   # not store a timestamp but a date as an
+                                   # integer.
+                                   default=lambda: utils.utcnow())
+
+    def to_baseclass(self):
+        cols = {}
+        for attr in self.attributes:
+            cols[attr.name] = sqlalchemy.Column(attr.satype,
+                                                nullable=not attr.required)
+        return type(str("%s_base" % self.tablename), (object, ), cols)
 
 
 class ResourceJsonifier(indexer.Resource):
@@ -216,14 +283,16 @@ class ResourceMixin(ResourceJsonifier):
                                            name="ck_started_before_ended"),
                 COMMON_TABLES_ARGS)
 
-    type = sqlalchemy.Column(sqlalchemy.Enum('generic', 'instance',
-                                             'swift_account', 'volume',
-                                             'ceph_account', 'network',
-                                             'identity', 'ipmi', 'stack',
-                                             'image', 'instance_disk',
-                                             'instance_network_interface',
-                                             name="resource_type_enum"),
-                             nullable=False, default='generic')
+    @declarative.declared_attr
+    def type(cls):
+        return sqlalchemy.Column(
+            sqlalchemy.String(255),
+            sqlalchemy.ForeignKey('resource_type.name',
+                                  ondelete="RESTRICT",
+                                  name="fk_%s_resource_type_name" %
+                                  cls.__tablename__),
+            nullable=False)
+
     created_by_user_id = sqlalchemy.Column(
         sqlalchemy.String(255))
     created_by_project_id = sqlalchemy.Column(
@@ -275,7 +344,7 @@ class ResourceHistory(ResourceMixin, Base, GnocchiBase):
                            sqlalchemy.ForeignKey(
                                'resource.id',
                                ondelete="CASCADE",
-                               name="fk_resource_history_id_resource_id"),
+                               name="fk_rh_id_resource_id"),
                            nullable=False)
     revision_end = sqlalchemy.Column(PreciseTimestamp, nullable=False,
                                      default=lambda: utils.utcnow())
@@ -298,13 +367,20 @@ class ResourceExtMixin(object):
 
     @declarative.declared_attr
     def id(cls):
+        tablename_compact = cls.__tablename__
+        if tablename_compact.endswith("_history"):
+            tablename_compact = tablename_compact[:-6]
         return sqlalchemy.Column(
             sqlalchemy_utils.UUIDType(),
             sqlalchemy.ForeignKey(
                 'resource.id',
                 ondelete="CASCADE",
-                name="fk_%s_id_resource_id" % cls.__tablename__),
-            primary_key=True)
+                name="fk_%s_id_resource_id" % tablename_compact,
+                # NOTE(sileht): We use to ensure that postgresql
+                # does not use AccessExclusiveLock on destination table
+                use_alter=True),
+            primary_key=True
+        )
 
 
 class ResourceHistoryExtMixin(object):
@@ -314,14 +390,31 @@ class ResourceHistoryExtMixin(object):
 
     @declarative.declared_attr
     def revision(cls):
+        tablename_compact = cls.__tablename__
+        if tablename_compact.endswith("_history"):
+            tablename_compact = tablename_compact[:-6]
         return sqlalchemy.Column(
             sqlalchemy.Integer,
             sqlalchemy.ForeignKey(
                 'resource_history.revision',
                 ondelete="CASCADE",
-                name="fk_%s_revision_resource_history_revision"
-                % cls.__tablename__),
-            primary_key=True)
+                name="fk_%s_revision_rh_revision"
+                % tablename_compact,
+                # NOTE(sileht): We use to ensure that postgresql
+                # does not use AccessExclusiveLock on destination table
+                use_alter=True),
+            primary_key=True
+        )
+
+
+class HistoryModelIterator(models.ModelIterator):
+    def __next__(self):
+        # NOTE(sileht): Our custom resource attribute columns don't
+        # have the same name in database than in sqlalchemy model
+        # so remove the additional "f_" for the model name
+        n = six.advance_iterator(self.i)
+        model_attr = n[2:] if n[:2] == "f_" else n
+        return model_attr, getattr(self.model, n)
 
 
 class ArchivePolicyRule(Base, GnocchiBase):
@@ -333,7 +426,6 @@ class ArchivePolicyRule(Base, GnocchiBase):
         sqlalchemy.ForeignKey(
             'archive_policy.name',
             ondelete="RESTRICT",
-            name="fk_archive_policy_rule_"
-            "archive_policy_name_archive_policy_name"),
+            name="fk_apr_ap_name_ap_name"),
         nullable=False)
     metric_pattern = sqlalchemy.Column(sqlalchemy.String(255), nullable=False)

@@ -38,6 +38,23 @@ set -o xtrace
 GITDIR["python-gnocchiclient"]=$DEST/python-gnocchiclient
 GITREPO["python-gnocchiclient"]=${GNOCCHICLIENT_REPO:-${GIT_BASE}/openstack/python-gnocchiclient.git}
 
+if [ -z "$GNOCCHI_DEPLOY" ]; then
+    # Default
+    GNOCCHI_DEPLOY=simple
+
+    # Fallback to common wsgi devstack configuration
+    if [ "$ENABLE_HTTPD_MOD_WSGI_SERVICES" == "True" ]; then
+        GNOCCHI_DEPLOY=mod_wsgi
+
+    # Deprecated config
+    elif [ -n "$GNOCCHI_USE_MOD_WSGI" ] ; then
+        echo_summary "GNOCCHI_USE_MOD_WSGI is deprecated, use GNOCCHI_DEPLOY instead"
+        if [ "$GNOCCHI_USE_MOD_WSGI" == True ]; then
+            GNOCCHI_DEPLOY=mod_wsgi
+        fi
+    fi
+fi
+
 # Functions
 # ---------
 
@@ -45,6 +62,13 @@ GITREPO["python-gnocchiclient"]=${GNOCCHICLIENT_REPO:-${GIT_BASE}/openstack/pyth
 # is_gnocchi_enabled
 function is_gnocchi_enabled {
     [[ ,${ENABLED_SERVICES} =~ ,"gnocchi-" ]] && return 0
+    return 1
+}
+
+# Test if a Ceph services are enabled
+# _is_ceph_enabled
+function _is_ceph_enabled {
+    type is_ceph_enabled_for_service >/dev/null 2>&1 && return 0
     return 1
 }
 
@@ -56,8 +80,12 @@ function is_gnocchi_enabled {
 # gnocchi_swift         gnocchi_swift  ResellerAdmin  (if Swift is enabled)
 function create_gnocchi_accounts {
     # Gnocchi
-    if is_service_enabled key && is_service_enabled gnocchi-api
-    then
+    if [ "$GNOCCHI_USE_KEYSTONE" == "True" ] && is_service_enabled gnocchi-api ; then
+        # At this time, the /etc/openstack/clouds.yaml is available,
+        # we could leverage that by setting OS_CLOUD
+        OLD_OS_CLOUD=$OS_CLOUD
+        export OS_CLOUD='devstack-admin'
+
         create_service_user "gnocchi"
 
         local gnocchi_service=$(get_or_create_service "gnocchi" \
@@ -74,6 +102,8 @@ function create_gnocchi_accounts {
                 "$SERVICE_PASSWORD" default "gnocchi_swift@example.com")
             get_or_add_user_project_role "ResellerAdmin" $gnocchi_swift_user "gnocchi_swift"
         fi
+
+        export OS_CLOUD=$OLD_OS_CLOUD
     fi
 }
 
@@ -113,32 +143,6 @@ function _gnocchi_install_redis {
     pip_install_gr redis
 }
 
-# install influxdb
-# NOTE(chdent): InfluxDB is not currently packaged by the distro at the
-# version that gnocchi needs. Until that is true we're downloading
-# the debs and rpms packaged by the InfluxDB company. When it is
-# true this method can be changed to be similar to
-# _gnocchi_install_redis above.
-function _gnocchi_install_influxdb {
-    if is_package_installed influxdb; then
-        echo "influxdb already installed"
-    else
-        local file=$(mktemp /tmp/influxpkg-XXXXX)
-
-        if is_ubuntu; then
-            wget -O $file $GNOCCHI_INFLUXDB_DEB_PKG
-            sudo dpkg -i $file
-        elif is_fedora; then
-            wget -O $file $GNOCCHI_INFLUXDB_RPM_PKG
-            sudo rpm -i $file
-        fi
-        rm $file
-    fi
-
-    # restart influxdb via its initscript
-    sudo /opt/influxdb/init.sh restart
-}
-
 function _gnocchi_install_grafana {
     if is_ubuntu; then
         local file=$(mktemp /tmp/grafanapkg-XXXXX)
@@ -148,18 +152,20 @@ function _gnocchi_install_grafana {
     elif is_fedora; then
         sudo yum install "$GRAFANA_RPM_PKG"
     fi
-
-    git_clone ${GRAFANA_PLUGINS_REPO} ${GRAFANA_PLUGINS_DIR}
-    # Grafana-server does not handle symlink :(
-    sudo mkdir -p /usr/share/grafana/public/app/plugins/datasource/gnocchi
-    sudo mount -o bind ${GRAFANA_PLUGINS_DIR}/datasources/gnocchi /usr/share/grafana/public/app/plugins/datasource/gnocchi
-
+    if [ ! "$GRAFANA_PLUGIN_VERSION" ]; then
+        sudo grafana-cli plugins install sileht-gnocchi-datasource
+    elif [ "$GRAFANA_PLUGIN_VERSION" != "git" ]; then
+        tmpfile=/tmp/sileht-gnocchi-datasource-${GRAFANA_PLUGIN_VERSION}.tar.gz
+        wget https://github.com/sileht/grafana-gnocchi-datasource/releases/download/${GRAFANA_PLUGIN_VERSION}/sileht-gnocchi-datasource-${GRAFANA_PLUGIN_VERSION}.tar.gz -O $tmpfile
+        sudo -u grafana tar -xzf $tmpfile -C /var/lib/grafana/plugins
+        rm -f $file
+    else
+        git_clone ${GRAFANA_PLUGINS_REPO} ${GRAFANA_PLUGINS_DIR}
+        sudo ln -sf ${GRAFANA_PLUGINS_DIR}/dist  /var/lib/grafana/plugins/grafana-gnocchi-datasource
+        # NOTE(sileht): This is long and have chance to fail, thx nodejs/npm
+        (cd /var/lib/grafana/plugins/grafana-gnocchi-datasource && npm install && ./run-tests.sh) || true
+    fi
     sudo service grafana-server restart
-}
-
-# remove the influxdb database
-function _gnocchi_cleanup_influxdb {
-    curl -G 'http://localhost:8086/query' --data-urlencode "q=DROP DATABASE $GNOCCHI_INFLUXDB_DBNAME"
 }
 
 function _cleanup_gnocchi_apache_wsgi {
@@ -209,7 +215,7 @@ function _config_gnocchi_apache_wsgi {
 # cleanup_gnocchi() - Remove residual data files, anything left over from previous
 # runs that a clean run would need to clean up
 function cleanup_gnocchi {
-    if [ "$GNOCCHI_USE_MOD_WSGI" == "True" ]; then
+    if [ "$GNOCCHI_DEPLOY" == "mod_wsgi" ]; then
         _cleanup_gnocchi_apache_wsgi
     fi
 }
@@ -220,12 +226,21 @@ function configure_gnocchi {
     sudo chown $STACK_USER $GNOCCHI_DATA_DIR
 
     # Configure logging
-    iniset $GNOCCHI_CONF DEFAULT verbose True
     iniset $GNOCCHI_CONF DEFAULT debug "$ENABLE_DEBUG_LOG_LEVEL"
 
     # Install the configuration files
     cp $GNOCCHI_DIR/etc/gnocchi/* $GNOCCHI_CONF_DIR
 
+
+    # Set up logging
+    if [ "$SYSLOG" != "False" ]; then
+        iniset $GNOCCHI_CONF DEFAULT use_syslog "True"
+    fi
+
+    # Format logging
+    if [ "$LOG_COLOR" == "True" ] && [ "$SYSLOG" == "False" ] && [ "$GNOCCHI_DEPLOY" != "mod_wsgi" ]; then
+        setup_colorized_logging $GNOCCHI_CONF DEFAULT
+    fi
 
     if [ -n "$GNOCCHI_COORDINATOR_URL" ]; then
         iniset $GNOCCHI_CONF storage coordination_url "$GNOCCHI_COORDINATOR_URL"
@@ -241,37 +256,29 @@ function configure_gnocchi {
     fi
 
     # Configure the storage driver
-    if is_service_enabled ceph && [[ "$GNOCCHI_STORAGE_BACKEND" = 'ceph' ]] ; then
+    if _is_ceph_enabled && [[ "$GNOCCHI_STORAGE_BACKEND" = 'ceph' ]] ; then
         iniset $GNOCCHI_CONF storage driver ceph
         iniset $GNOCCHI_CONF storage ceph_username ${GNOCCHI_CEPH_USER}
-        iniset $GNOCCHI_CONF storage ceph_keyring ${CEPH_CONF_DIR}/ceph.client.${GNOCCHI_CEPH_USER}.keyring
+        iniset $GNOCCHI_CONF storage ceph_secret $(awk '/key/{print $3}' ${CEPH_CONF_DIR}/ceph.client.${GNOCCHI_CEPH_USER}.keyring)
     elif is_service_enabled swift && [[ "$GNOCCHI_STORAGE_BACKEND" = 'swift' ]] ; then
         iniset $GNOCCHI_CONF storage driver swift
         iniset $GNOCCHI_CONF storage swift_user gnocchi_swift
         iniset $GNOCCHI_CONF storage swift_key $SERVICE_PASSWORD
-        iniset $GNOCCHI_CONF storage swift_tenant_name "gnocchi_swift"
-        iniset $GNOCCHI_CONF storage swift_auth_version 2
-        iniset $GNOCCHI_CONF storage swift_authurl $KEYSTONE_SERVICE_URI/v2.0/
+        iniset $GNOCCHI_CONF storage swift_project_name "gnocchi_swift"
+        iniset $GNOCCHI_CONF storage swift_auth_version 3
+        iniset $GNOCCHI_CONF storage swift_authurl $KEYSTONE_SERVICE_URI_V3
     elif [[ "$GNOCCHI_STORAGE_BACKEND" = 'file' ]] ; then
         iniset $GNOCCHI_CONF storage driver file
         iniset $GNOCCHI_CONF storage file_basepath $GNOCCHI_DATA_DIR/
-    elif [[ "$GNOCCHI_STORAGE_BACKEND" == 'influxdb' ]] ; then
-        iniset $GNOCCHI_CONF storage driver influxdb
-        iniset $GNOCCHI_CONF storage influxdb_database $GNOCCHI_INFLUXDB_DBNAME
     else
         echo "ERROR: could not configure storage driver"
         exit 1
     fi
 
-    if is_service_enabled key; then
+    if [ "$GNOCCHI_USE_KEYSTONE" == "True" ] ; then
+        iniset $GNOCCHI_PASTE_CONF pipeline:main pipeline gnocchi+auth
         if is_service_enabled gnocchi-grafana; then
-            iniset $GNOCCHI_PASTE_CONF pipeline:main pipeline "cors gnocchi+auth"
-            iniset $KEYSTONE_CONF cors allowed_origin ${GRAFANA_URL}
             iniset $GNOCCHI_CONF cors allowed_origin ${GRAFANA_URL}
-            iniset $GNOCCHI_CONF cors allow_methods GET,POST,PUT,DELETE,OPTIONS,HEAD,PATCH
-            iniset $GNOCCHI_CONF cors allow_headers Content-Type,Cache-Control,Content-Language,Expires,Last-Modified,Pragma,X-Auth-Token,X-Subject-Token
-        else
-            iniset $GNOCCHI_PASTE_CONF pipeline:main pipeline gnocchi+auth
         fi
     else
         iniset $GNOCCHI_PASTE_CONF pipeline:main pipeline gnocchi+noauth
@@ -280,8 +287,44 @@ function configure_gnocchi {
     # Configure the indexer database
     iniset $GNOCCHI_CONF indexer url `database_connection_url gnocchi`
 
-    if [ "$GNOCCHI_USE_MOD_WSGI" == "True" ]; then
+    if [ "$GNOCCHI_DEPLOY" == "mod_wsgi" ]; then
         _config_gnocchi_apache_wsgi
+    elif [ "$GNOCCHI_DEPLOY" == "uwsgi" ]; then
+        # iniset creates these files when it's called if they don't exist.
+        GNOCCHI_UWSGI_FILE=$GNOCCHI_CONF_DIR/uwsgi.ini
+
+        rm -f "$GNOCCHI_UWSGI_FILE"
+
+        iniset "$GNOCCHI_UWSGI_FILE" uwsgi http $GNOCCHI_SERVICE_HOST:$GNOCCHI_SERVICE_PORT
+        iniset "$GNOCCHI_UWSGI_FILE" uwsgi wsgi-file "$GNOCCHI_DIR/gnocchi/rest/app.wsgi"
+        # This is running standalone
+        iniset "$GNOCCHI_UWSGI_FILE" uwsgi master true
+        # Set die-on-term & exit-on-reload so that uwsgi shuts down
+        iniset "$GNOCCHI_UWSGI_FILE" uwsgi die-on-term true
+        iniset "$GNOCCHI_UWSGI_FILE" uwsgi exit-on-reload true
+        iniset "$GNOCCHI_UWSGI_FILE" uwsgi threads 32
+        iniset "$GNOCCHI_UWSGI_FILE" uwsgi processes $API_WORKERS
+        iniset "$GNOCCHI_UWSGI_FILE" uwsgi enable-threads true
+        iniset "$GNOCCHI_UWSGI_FILE" uwsgi plugins python
+        # uwsgi recommends this to prevent thundering herd on accept.
+        iniset "$GNOCCHI_UWSGI_FILE" uwsgi thunder-lock true
+        # Override the default size for headers from the 4k default.
+        iniset "$GNOCCHI_UWSGI_FILE" uwsgi buffer-size 65535
+        # Make sure the client doesn't try to re-use the connection.
+        iniset "$GNOCCHI_UWSGI_FILE" uwsgi add-header "Connection: close"
+        # Don't share rados resources and python-requests globals between processes
+        iniset "$GNOCCHI_UWSGI_FILE" uwsgi lazy-apps true
+    fi
+}
+
+# configure_keystone_for_gnocchi() - Configure Keystone needs for Gnocchi
+function configure_keystone_for_gnocchi {
+    if [ "$GNOCCHI_USE_KEYSTONE" == "True" ] ; then
+        if is_service_enabled gnocchi-grafana; then
+            # NOTE(sileht): keystone configuration have to be set before uwsgi
+            # is started
+            iniset $KEYSTONE_CONF cors allowed_origin ${GRAFANA_URL}
+        fi
     fi
 }
 
@@ -294,7 +337,7 @@ function configure_ceph_gnocchi {
         sudo ceph -c ${CEPH_CONF_FILE} osd pool set ${GNOCCHI_CEPH_POOL} crush_ruleset ${RULE_ID}
 
     fi
-    sudo ceph -c ${CEPH_CONF_FILE} auth get-or-create client.${GNOCCHI_CEPH_USER} mon "allow r" osd "allow class-read object_prefix rbd_children, allow rwx pool=${GNOCCHI_CEPH_POOL}" | sudo tee ${CEPH_CONF_DIR}/ceph.client.${GNOCCHI_CEPH_USER}.keyring
+    sudo ceph -c ${CEPH_CONF_FILE} auth get-or-create client.${GNOCCHI_CEPH_USER} mon "allow r" osd "allow rwx pool=${GNOCCHI_CEPH_POOL}" | sudo tee ${CEPH_CONF_DIR}/ceph.client.${GNOCCHI_CEPH_USER}.keyring
     sudo chown ${STACK_USER}:$(id -g -n $whoami) ${CEPH_CONF_DIR}/ceph.client.${GNOCCHI_CEPH_USER}.keyring
 }
 
@@ -309,13 +352,18 @@ function init_gnocchi {
     if is_service_enabled mysql postgresql; then
         recreate_database gnocchi
     fi
-    $GNOCCHI_BIN_DIR/gnocchi-upgrade
+    if is_service_enabled ceilometer; then
+        $GNOCCHI_BIN_DIR/gnocchi-upgrade --create-legacy-resource-types
+    else
+        $GNOCCHI_BIN_DIR/gnocchi-upgrade
+    fi
 }
 
 function preinstall_gnocchi {
-    # Needed to build psycopg2
     if is_ubuntu; then
-        install_package libpq-dev
+        # libpq-dev is needed to build psycopg2
+        # uuid-runtime is needed to use the uuidgen command
+        install_package libpq-dev uuid-runtime
     else
         install_package postgresql-devel
     fi
@@ -331,11 +379,6 @@ function install_gnocchi {
         _gnocchi_install_redis
     fi
 
-    if [[ "${GNOCCHI_STORAGE_BACKEND}" == 'influxdb' ]] ; then
-        _gnocchi_install_influxdb
-        pip_install influxdb
-    fi
-
     if [[ "$GNOCCHI_STORAGE_BACKEND" = 'ceph' ]] ; then
         pip_install cradox
     fi
@@ -347,13 +390,15 @@ function install_gnocchi {
 
     install_gnocchiclient
 
-    is_service_enabled key && EXTRA_FLAVOR=,keystonmiddleware
+    [ "$GNOCCHI_USE_KEYSTONE" == "True" ] && EXTRA_FLAVOR=,keystonemiddleware
 
     # We don't use setup_package because we don't follow openstack/requirements
     sudo -H pip install -e "$GNOCCHI_DIR"[test,$GNOCCHI_STORAGE_BACKEND,${DATABASE_TYPE}${EXTRA_FLAVOR}]
 
-    if [ "$GNOCCHI_USE_MOD_WSGI" == "True" ]; then
+    if [ "$GNOCCHI_DEPLOY" == "mod_wsgi" ]; then
         install_apache_wsgi
+    elif [ "$GNOCCHI_DEPLOY" == "uwsgi" ]; then
+        pip_install uwsgi
     fi
 
     # Create configuration directory
@@ -364,7 +409,7 @@ function install_gnocchi {
 # start_gnocchi() - Start running processes, including screen
 function start_gnocchi {
 
-    if [ "$GNOCCHI_USE_MOD_WSGI" == "True" ]; then
+    if [ "$GNOCCHI_DEPLOY" == "mod_wsgi" ]; then
         enable_apache_site gnocchi
         restart_apache_server
         if [[ -n $GNOCCHI_SERVICE_PORT ]]; then
@@ -378,6 +423,8 @@ function start_gnocchi {
             tail_log gnocchi /var/log/$APACHE_NAME/error[_\.]log
             tail_log gnocchi-api /var/log/$APACHE_NAME/access[_\.]log
         fi
+    elif [ "$GNOCCHI_DEPLOY" == "uwsgi" ]; then
+        run_process gnocchi-api "$GNOCCHI_BIN_DIR/uwsgi $GNOCCHI_UWSGI_FILE"
     else
         run_process gnocchi-api "$GNOCCHI_BIN_DIR/gnocchi-api -d -v --config-file $GNOCCHI_CONF"
     fi
@@ -391,18 +438,12 @@ function start_gnocchi {
     fi
 
     # Create a default policy
-    if ! is_service_enabled key; then
+    if [ "$GNOCCHI_USE_KEYSTONE" == "False" ]; then
         export OS_AUTH_TYPE=gnocchi-noauth
         export GNOCCHI_USER_ID=`uuidgen`
         export GNOCCHI_PROJECT_ID=`uuidgen`
         export GNOCCHI_ENDPOINT="$(gnocchi_service_url)"
     fi
-
-    gnocchi archive-policy create -d granularity:5m,points:12 -d granularity:1h,points:24 -d granularity:1d,points:30 low
-    gnocchi archive-policy create -d granularity:60s,points:60 -d granularity:1h,points:168 -d granularity:1d,points:365 medium
-    gnocchi archive-policy create -d granularity:1s,points:86400 -d granularity:1m,points:43200 -d granularity:1h,points:8760 high
-
-    gnocchi archive-policy-rule create -a low -m "*" default
 
     # run metricd last so we are properly waiting for swift and friends
     run_process gnocchi-metricd "$GNOCCHI_BIN_DIR/gnocchi-metricd -d -v --config-file $GNOCCHI_CONF"
@@ -411,7 +452,7 @@ function start_gnocchi {
 
 # stop_gnocchi() - Stop running processes
 function stop_gnocchi {
-    if [ "$GNOCCHI_USE_MOD_WSGI" == "True" ]; then
+    if [ "$GNOCCHI_DEPLOY" == "mod_wsgi" ]; then
         disable_apache_site gnocchi
         restart_apache_server
     fi
@@ -419,14 +460,6 @@ function stop_gnocchi {
     for serv in gnocchi-api; do
         stop_process $serv
     done
-
-    if [[ "${GNOCCHI_STORAGE_BACKEND}" == 'influxdb' ]] ; then
-        _gnocchi_cleanup_influxdb
-    fi
-
-    if is_service_enabled gnocchi-grafana; then
-        sudo umount /usr/share/grafana/public/app/plugins/datasource/gnocchi
-    fi
 }
 
 if is_service_enabled gnocchi-api; then
@@ -436,11 +469,12 @@ if is_service_enabled gnocchi-api; then
     elif [[ "$1" == "stack" && "$2" == "install" ]]; then
         echo_summary "Installing Gnocchi"
         stack_install_service gnocchi
+        configure_keystone_for_gnocchi
     elif [[ "$1" == "stack" && "$2" == "post-config" ]]; then
         echo_summary "Configuring Gnocchi"
         configure_gnocchi
         create_gnocchi_accounts
-        if is_service_enabled ceph && [[ "$GNOCCHI_STORAGE_BACKEND" = 'ceph' ]] ; then
+        if _is_ceph_enabled && [[ "$GNOCCHI_STORAGE_BACKEND" = 'ceph' ]] ; then
             echo_summary "Configuring Gnocchi for Ceph"
             configure_ceph_gnocchi
         fi
