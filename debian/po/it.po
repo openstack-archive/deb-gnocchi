@@ -1,13 +1,13 @@
-# Italian description of glance debconf messages.
-# Copyright (C) 2012, glance package copyright holder.
-# This file is distributed under the same license as the glance package.
-# Beatrice Torracca <beatricet@libero.it>, 2012, 2013, 2014.
+# Italian description of gnocchi debconf messages.
+# Copyright (C) 2016, gnocchi package copyright holder.
+# This file is distributed under the same license as the gnocchi package.
+# Beatrice Torracca <beatricet@libero.it>, 2012, 2013, 2014, 2016.
 msgid ""
 msgstr ""
 "Project-Id-Version: glance\n"
 "Report-Msgid-Bugs-To: gnocchi@packages.debian.org\n"
 "POT-Creation-Date: 2016-03-29 13:10+0000\n"
-"PO-Revision-Date: 2014-04-21 10:03+0200\n"
+"PO-Revision-Date: 2016-09-30 07:28+0200\n"
 "Last-Translator: Beatrice Torracca <beatricet@libero.it>\n"
 "Language-Team: Italian <debian-l10n-italian@lists.debian.org>\n"
 "Language: it\n"
@@ -94,7 +94,6 @@ msgstr "Impostare un database per Gnocchi?"
 #. Type: boolean
 #. Description
 #: ../gnocchi-common.templates:6001
-#, fuzzy
 #| msgid ""
 #| "No database has been set up for glance-registry or glance-api to use. "
 #| "Before continuing, you should make sure you have the following "
@@ -103,9 +102,8 @@ msgid ""
 "No database has been set up for Gnocchi to use. Before continuing, you "
 "should make sure you have the following information:"
 msgstr ""
-"Non è stato impostato alcun database per essere usato da glance-registry o "
-"glance-api. Prima di continuare assicurarsi di avere le seguenti "
-"informazioni:"
+"Non è stato impostato alcun database per l'uso da parte di Gnocchi. Prima di "
+"continuare, assicurarsi di avere le seguenti informazioni:"
 
 #. Type: boolean
 #. Description
@@ -135,7 +133,6 @@ msgstr ""
 #. Type: boolean
 #. Description
 #: ../gnocchi-common.templates:6001
-#, fuzzy
 #| msgid ""
 #| "You can change this setting later on by running \"dpkg-reconfigure -plow "
 #| "glance-common\"."
@@ -144,7 +141,7 @@ msgid ""
 "gnocchi-common\"."
 msgstr ""
 "È possibile cambiare questa impostazione successivamente eseguendo «dpkg-"
-"reconfigure -plow glance-common»."
+"reconfigure -plow gnocchi-common»."
 
 #. Type: boolean
 #. Description
@@ -167,7 +164,6 @@ msgstr ""
 #. Type: boolean
 #. Description
 #: ../gnocchi-api.templates:2001
-#, fuzzy
 #| msgid ""
 #| "Note that you will need to have an up and running Keystone server on "
 #| "which to connect using the Keystone authentication token."
@@ -177,7 +173,9 @@ msgid ""
 "The admin auth token is not used anymore."
 msgstr ""
 "Notare che sarà necessario avere un server Keystone in funzione a cui "
-"connettersi usando il token di autenticazione Keystone."
+"connettersi usando un nome di progetto di amministrazione conosciuto, un "
+"nome utente e password di amministratore. Il token di autenticazione di "
+"amministratore non è più usato."
 
 #. Type: string
 #. Description
@@ -199,10 +197,9 @@ msgstr ""
 #. Type: string
 #. Description
 #: ../gnocchi-api.templates:4001
-#, fuzzy
 #| msgid "Keystone authentication token:"
 msgid "Keystone admin name:"
-msgstr "Token di autenticazione Keystone:"
+msgstr "Nome amministratore Keystone:"
 
 #. Type: string
 #. Description
@@ -216,18 +213,21 @@ msgid ""
 "To register the service endpoint, this package needs to know the Admin "
 "login, name, project name, and password to the Keystone server."
 msgstr ""
+"Per registrare il punto terminale del servizio questo pacchetto deve "
+"conoscere il login, il nome, il nome del progetto e la password "
+"dell'amministratore per il server Keystone."
 
 #. Type: string
 #. Description
 #: ../gnocchi-api.templates:5001
 msgid "Keystone admin project name:"
-msgstr ""
+msgstr "Nome del progetto di amministrazione Keystone:"
 
 #. Type: password
 #. Description
 #: ../gnocchi-api.templates:6001
 msgid "Keystone admin password:"
-msgstr ""
+msgstr "Password amministratore Keystone:"
 
 #. Type: string
 #. Description
@@ -270,14 +270,3 @@ msgstr ""
 "OpenStack gestisce le zone di disponibilità, con ogni regione che "
 "rappresenta una posizione. Inserire la zona che si desidera usare durante la "
 "registrazione del punto terminale."
-
-#, fuzzy
-#~| msgid ""
-#~| "To configure its endpoint in Keystone, glance-api needs the Keystone "
-#~| "authentication token."
-#~ msgid ""
-#~ "To configure its endpoint in Keystone, gnocchi-api needs the Keystone "
-#~ "authentication token."
-#~ msgstr ""
-#~ "Per configurare il proprio punto terminale in Keystone, glance-api ha "
-#~ "bisogno del token di autenticazione Keystone."
