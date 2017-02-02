@@ -26,6 +26,7 @@ import iso8601
 import msgpack
 from oslo_config import cfg
 from oslo_log import log
+from oslo_serialization import msgpackutils
 from oslo_utils import timeutils
 import pandas
 import six
@@ -65,24 +66,14 @@ class CarbonaraBasedStorage(storage.StorageDriver):
 
     def __init__(self, conf):
         super(CarbonaraBasedStorage, self).__init__(conf)
-        self.coord = coordination.get_coordinator(
-            conf.coordination_url,
-            str(uuid.uuid4()).encode('ascii'))
         self.aggregation_workers_number = conf.aggregation_workers_number
         if self.aggregation_workers_number == 1:
             # NOTE(jd) Avoid using futures at all if we don't want any threads.
             self._map_in_thread = self._map_no_thread
         else:
             self._map_in_thread = self._map_in_futures_threads
-        self.start()
-
-    @utils.retry
-    def start(self):
-        try:
-            self.coord.start(start_heart=True)
-        except Exception as e:
-            LOG.error("Unable to start coordinator: %s" % e)
-            raise utils.Retry(e)
+        self.coord, my_id = utils.get_coordinator_and_start(
+            conf.coordination_url)
 
     def stop(self):
         self.coord.stop()
@@ -177,7 +168,7 @@ class CarbonaraBasedStorage(storage.StorageDriver):
         try:
             return carbonara.AggregatedTimeSerie.unserialize(
                 data, key, aggregation, granularity)
-        except ValueError:
+        except carbonara.InvalidData:
             LOG.error("Data corruption detected for %s "
                       "aggregated `%s' timeserie, granularity `%s' "
                       "around time `%s', ignoring."
@@ -239,7 +230,7 @@ class CarbonaraBasedStorage(storage.StorageDriver):
                                oldest_mutable_timestamp):
         # NOTE(jd) We write the full split only if the driver works that way
         # (self.WRITE_FULL) or if the oldest_mutable_timestamp is out of range.
-        write_full = self.WRITE_FULL or oldest_mutable_timestamp >= next(key)
+        write_full = self.WRITE_FULL or next(key) <= oldest_mutable_timestamp
         key_as_str = str(key)
         if write_full:
             try:
@@ -254,6 +245,20 @@ class CarbonaraBasedStorage(storage.StorageDriver):
                         split = existing
                     else:
                         split.merge(existing)
+
+        if split is None:
+            # `split' can be none if existing is None and no split was passed
+            # in order to rewrite and compress the data; in that case, it means
+            # the split key is present and listed, but some aggregation method
+            # or granularity is missing. That means data is corrupted, but it
+            # does not mean we have to fail, we can just do nothing and log a
+            # warning.
+            LOG.warning("No data found for metric %s, granularity %f "
+                        "and aggregation method %s (split key %s): "
+                        "possible data corruption",
+                        metric, archive_policy_def.granularity,
+                        aggregation, key)
+            return
 
         offset, data = split.serialize(key, compressed=write_full)
 
@@ -301,7 +306,7 @@ class CarbonaraBasedStorage(storage.StorageDriver):
                         archive_policy_def.granularity)
                     existing_keys.remove(key)
         else:
-            oldest_key_to_keep = carbonara.SplitKey(0)
+            oldest_key_to_keep = carbonara.SplitKey(0, 0)
 
         # Rewrite all read-only splits just for fun (and compression). This
         # only happens if `previous_oldest_mutable_timestamp' exists, which
@@ -319,8 +324,8 @@ class CarbonaraBasedStorage(storage.StorageDriver):
                         # NOTE(jd) Rewrite it entirely for fun (and later for
                         # compression). For that, we just pass None as split.
                         self._store_timeserie_split(
-                            metric, carbonara.SplitKey.from_key_string(
-                                key, archive_policy_def.granularity),
+                            metric, carbonara.SplitKey(
+                                float(key), archive_policy_def.granularity),
                             None, aggregation, archive_policy_def,
                             oldest_mutable_timestamp)
 
@@ -372,10 +377,20 @@ class CarbonaraBasedStorage(storage.StorageDriver):
     _MEASURE_SERIAL_FORMAT = "Qd"
     _MEASURE_SERIAL_LEN = struct.calcsize(_MEASURE_SERIAL_FORMAT)
 
-    def _unserialize_measures(self, data):
+    def _unserialize_measures(self, measure_id, data):
         nb_measures = len(data) // self._MEASURE_SERIAL_LEN
-        measures = struct.unpack(
-            "<" + self._MEASURE_SERIAL_FORMAT * nb_measures, data)
+        try:
+            measures = struct.unpack(
+                "<" + self._MEASURE_SERIAL_FORMAT * nb_measures, data)
+        except struct.error:
+            # This either a corruption, either a v2 measures
+            try:
+                return msgpackutils.loads(data)
+            except ValueError:
+                LOG.error(
+                    "Unable to decode measure %s, possible data corruption",
+                    measure_id)
+                raise
         return six.moves.zip(
             pandas.to_datetime(measures[::2], unit='ns'),
             itertools.islice(measures, 1, len(measures), 2))
@@ -453,13 +468,13 @@ class CarbonaraBasedStorage(storage.StorageDriver):
     def upgrade(self, index):
         marker = None
         while True:
-            metrics = index.list_metrics(limit=self.UPGRADE_BATCH_SIZE,
-                                         marker=marker)
-            for m in metrics:
-                self._check_for_metric_upgrade(m)
+            metrics = [(metric,) for metric in
+                       index.list_metrics(limit=self.UPGRADE_BATCH_SIZE,
+                                          marker=marker)]
+            self._map_in_thread(self._check_for_metric_upgrade, metrics)
             if len(metrics) == 0:
                 break
-            marker = metrics[-1].id
+            marker = metrics[-1][0].id
 
     def process_new_measures(self, indexer, metrics_to_process, sync=False):
         metrics = indexer.list_metrics(ids=metrics_to_process)

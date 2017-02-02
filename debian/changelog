@@ -1,9 +1,15 @@
-gnocchi (3.0.0-3) UNRELEASED; urgency=medium
+gnocchi (3.0.4-1) unstable; urgency=medium
 
+  * Team upload.
+
+  [ Ondřej Nový ]
   * Bumped debhelper compat version to 10
   * Added lsb-base to depends
 
- -- Ondřej Nový <onovy@debian.org>  Wed, 23 Nov 2016 23:58:26 +0100
+  [ Ondřej Kobližek ]
+  * New upstream release (Closes: #852991)
+
+ -- Ondřej Kobližek <koblizeko@gmail.com>  Thu, 02 Feb 2017 14:44:31 +0100
 
 gnocchi (3.0.0-2) unstable; urgency=medium
 
