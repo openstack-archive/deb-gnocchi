@@ -390,7 +390,7 @@ function install_gnocchi {
 
     install_gnocchiclient
 
-    [ "$GNOCCHI_USE_KEYSTONE" == "True" ] && EXTRA_FLAVOR=,keystonemiddleware
+    [ "$GNOCCHI_USE_KEYSTONE" == "True" ] && EXTRA_FLAVOR=,keystone
 
     # We don't use setup_package because we don't follow openstack/requirements
     sudo -H pip install -e "$GNOCCHI_DIR"[test,$GNOCCHI_STORAGE_BACKEND,${DATABASE_TYPE}${EXTRA_FLAVOR}]
@@ -426,7 +426,7 @@ function start_gnocchi {
     elif [ "$GNOCCHI_DEPLOY" == "uwsgi" ]; then
         run_process gnocchi-api "$GNOCCHI_BIN_DIR/uwsgi $GNOCCHI_UWSGI_FILE"
     else
-        run_process gnocchi-api "$GNOCCHI_BIN_DIR/gnocchi-api -d -v --config-file $GNOCCHI_CONF"
+        run_process gnocchi-api "$GNOCCHI_BIN_DIR/gnocchi-api --port $GNOCCHI_SERVICE_PORT"
     fi
     # only die on API if it was actually intended to be turned on
     if is_service_enabled gnocchi-api; then
@@ -457,7 +457,7 @@ function stop_gnocchi {
         restart_apache_server
     fi
     # Kill the gnocchi screen windows
-    for serv in gnocchi-api; do
+    for serv in gnocchi-api gnocchi-metricd gnocchi-statsd; do
         stop_process $serv
     done
 }
