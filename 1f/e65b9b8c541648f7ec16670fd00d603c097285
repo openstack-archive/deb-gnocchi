@@ -1,0 +1,8 @@
+Code-Review+2: Thomas Goirand <thomas@goirand.fr>
+Workflow+1: Thomas Goirand <thomas@goirand.fr>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Mon, 03 Apr 2017 17:53:29 +0000
+Reviewed-on: https://review.openstack.org/452817
+Project: openstack/deb-gnocchi
+Branch: refs/heads/debian/newton
