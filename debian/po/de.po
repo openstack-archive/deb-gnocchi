@@ -1,14 +1,14 @@
-# German debconf translation of glance.
-# This file is distributed under the same license as the glance package.
+# German debconf translation of gnocchi.
+# This file is distributed under the same license as the gnocchi package.
 # Copyright (C) 2010 United States Government,2010-2011 OpenStack LLC.
-# Copyright (C) of this file 2012-2014 Chris Leick <c.leick@vollbio.de>.
+# Copyright (C) of this file 2012-2016 Chris Leick <c.leick@vollbio.de>.
 #
 msgid ""
 msgstr ""
-"Project-Id-Version: glance 2013.2.1-1\n"
+"Project-Id-Version: gnocchi 3.0.0-2\n"
 "Report-Msgid-Bugs-To: gnocchi@packages.debian.org\n"
 "POT-Creation-Date: 2016-03-29 13:10+0000\n"
-"PO-Revision-Date: 2014-01-09 22:51+0100\n"
+"PO-Revision-Date: 2016-10-29 18:15+0100\n"
 "Last-Translator: Chris Leick <c.leick@vollbio.de>\n"
 "Language-Team: German <debian-l10n-german@lists.debian.org>\n"
 "Language: de\n"
@@ -25,17 +25,12 @@ msgstr "Rechnername des Authentifizierungsservers:"
 #. Type: string
 #. Description
 #: ../gnocchi-common.templates:2001
-#, fuzzy
-#| msgid ""
-#| "Please specify the hostname of the authentication server for Glance. "
-#| "Typically this is also the hostname of the OpenStack Identity Service "
-#| "(Keystone)."
 msgid ""
 "Please specify the hostname of the authentication server for Gnocchi. "
 "Typically this is also the hostname of the OpenStack Identity Service "
 "(Keystone)."
 msgstr ""
-"Bitte geben Sie den Rechnernamen des Glance-Authentifizierungsservers an. "
+"Bitte geben Sie den Rechnernamen des Gnocci-Authentifizierungsservers an. "
 "Typischerweise ist das gleichzeitig der Rechnername Ihres OpenStack-"
 "Identitätsdienstes (Keystone)."
 
@@ -96,26 +91,19 @@ msgstr ""
 #. Type: boolean
 #. Description
 #: ../gnocchi-common.templates:6001
-#, fuzzy
-#| msgid "Set up a database for Glance?"
 msgid "Set up a database for Gnocchi?"
-msgstr "Eine Datenbank für Glance einrichten?"
+msgstr "Eine Datenbank für Gnocci einrichten?"
 
 #. Type: boolean
 #. Description
 #: ../gnocchi-common.templates:6001
-#, fuzzy
-#| msgid ""
-#| "No database has been set up for glance-registry or glance-api to use. "
-#| "Before continuing, you should make sure you have the following "
-#| "information:"
 msgid ""
 "No database has been set up for Gnocchi to use. Before continuing, you "
 "should make sure you have the following information:"
 msgstr ""
-"Es wurde keine Datenbank für die Benutzung mit der Glance-Registry oder das "
-"Glance-API eingerichtet. Bevor Sie fortfahren, sollten Sie sicherstellen, "
-"dass Sie die folgenden Informationen haben:"
+"Es wurde keine Datenbank für die Benutzung mit Gnocci eingerichtet. Bevor Sie "
+"fortfahren, sollten Sie sicherstellen, dass Sie die folgenden Informationen "
+"haben:"
 
 #. Type: boolean
 #. Description
@@ -146,24 +134,18 @@ msgstr ""
 #. Type: boolean
 #. Description
 #: ../gnocchi-common.templates:6001
-#, fuzzy
-#| msgid ""
-#| "You can change this setting later on by running \"dpkg-reconfigure -plow "
-#| "glance-common\"."
 msgid ""
 "You can change this setting later on by running \"dpkg-reconfigure -plow "
 "gnocchi-common\"."
 msgstr ""
 "Sie können diese Einstellung später ändern, indem Sie »dpkg-reconfigure -"
-"plow glance-common« ausführen."
+"plow gnocci-common« ausführen."
 
 #. Type: boolean
 #. Description
 #: ../gnocchi-api.templates:2001
-#, fuzzy
-#| msgid "Register Glance in the Keystone endpoint catalog?"
 msgid "Register Gnocchi in the Keystone endpoint catalog?"
-msgstr "Glance im Keystone-Endpunktkatalog registrieren?"
+msgstr "Gnocci im Keystone-Endpunktkatalog registrieren?"
 
 #. Type: boolean
 #. Description
@@ -180,18 +162,15 @@ msgstr ""
 #. Type: boolean
 #. Description
 #: ../gnocchi-api.templates:2001
-#, fuzzy
-#| msgid ""
-#| "Note that you will need to have an up and running Keystone server on "
-#| "which to connect using the Keystone authentication token."
 msgid ""
 "Note that you will need to have an up and running Keystone server on which "
 "to connect using a known admin project name, admin username and password. "
 "The admin auth token is not used anymore."
 msgstr ""
-"Beachten Sie, dass Sie einen gestarteten und laufenden Keystone-Server haben "
-"müssen, mit dem Sie sich anhand des Keystone-Authentifizierungs-Tokens "
-"verbinden."
+"Beachten Sie, dass Sie einen konfigurierten und laufenden Keystone-Server "
+"haben müssen, mit dem Sie sich anhand eines bekannten "
+"Administratorprojektnamens, Administratorbenutzernamens und Passworts "
+"verbinden. Das Administratorauthentifizierungs-Token wird nicht mehr benutzt."
 
 #. Type: string
 #. Description
@@ -202,25 +181,19 @@ msgstr "IP-Adresse des Keystone-Servers:"
 #. Type: string
 #. Description
 #: ../gnocchi-api.templates:3001
-#, fuzzy
-#| msgid ""
-#| "Please enter the IP address of the Keystone server, so that glance-api "
-#| "can contact Keystone to do the Glance service and endpoint creation."
 msgid ""
 "Please enter the IP address of the Keystone server, so that gnocchi-api can "
 "contact Keystone to do the Gnocchi service and endpoint creation."
 msgstr ""
-"Bitte geben Sie die IP-Adresse des Keystone-Servers an, so dass Glance-API "
-"Keystone kontaktieren kann, um den Glance-Dienst und den Endpunkt zu "
+"Bitte geben Sie die IP-Adresse des Keystone-Servers an, so dass Gnocci-API "
+"Keystone kontaktieren kann, um den Gnocci-Dienst und den Endpunkt zu "
 "erstellen."
 
 #. Type: string
 #. Description
 #: ../gnocchi-api.templates:4001
-#, fuzzy
-#| msgid "Keystone authentication token:"
 msgid "Keystone admin name:"
-msgstr "Keystone-Authentifizierungs-Token:"
+msgstr "Keystone-Administratorname:"
 
 #. Type: string
 #. Description
@@ -234,35 +207,34 @@ msgid ""
 "To register the service endpoint, this package needs to know the Admin "
 "login, name, project name, and password to the Keystone server."
 msgstr ""
+"Um den Dienstendpunkt zu registrieren, muss dieses Paket den "
+"Administratoranmeldenamen, Namen, Projektnamen und das Passwort für den "
+"Keystone-Server kennen."
 
 #. Type: string
 #. Description
 #: ../gnocchi-api.templates:5001
 msgid "Keystone admin project name:"
-msgstr ""
+msgstr "Keystone-Administratorprojektname:"
 
 #. Type: password
 #. Description
 #: ../gnocchi-api.templates:6001
 msgid "Keystone admin password:"
-msgstr ""
+msgstr "Keystone-Administratorpasswort:"
 
 #. Type: string
 #. Description
 #: ../gnocchi-api.templates:7001
-#, fuzzy
-#| msgid "Glance endpoint IP address:"
 msgid "Gnocchi endpoint IP address:"
-msgstr "IP-Adresse des Glance-Endpunkts"
+msgstr "IP-Adresse des Gnocci-Endpunkts"
 
 #. Type: string
 #. Description
 #: ../gnocchi-api.templates:7001
-#, fuzzy
-#| msgid "Please enter the IP address that will be used to contact Glance."
 msgid "Please enter the IP address that will be used to contact Gnocchi."
 msgstr ""
-"Bitte geben Sie die IP-Adresse ein, die zum Kontaktieren von Glance benutzt "
+"Bitte geben Sie die IP-Adresse ein, die zum Kontaktieren von Gnocci benutzt "
 "wird."
 
 #. Type: string
@@ -294,74 +266,3 @@ msgstr ""
 "OpenStack unterstützt die Verwendung von Verfügbarkeitszonen, bei der jede "
 "Region einen Ort repräsentiert. Bitte geben Sie die Zone, die Sie benutzen "
 "möchten, bei der Registrierung des Endpunkts an."
-
-#, fuzzy
-#~| msgid ""
-#~| "To configure its endpoint in Keystone, glance-api needs the Keystone "
-#~| "authentication token."
-#~ msgid ""
-#~ "To configure its endpoint in Keystone, gnocchi-api needs the Keystone "
-#~ "authentication token."
-#~ msgstr ""
-#~ "Glance-API benötigt das Keystone-Authentifizierungs-Token, um seinen "
-#~ "Endpunkt in Keystone zu konfigurieren."
-
-#~ msgid "keystone"
-#~ msgstr "Keystone"
-
-#~ msgid "caching"
-#~ msgstr "Zwischenspeichern"
-
-#~ msgid "keystone+caching"
-#~ msgstr "Keystone+Zwischenspeichern"
-
-#~ msgid "cachemanagement"
-#~ msgstr "Zwischenspeicherverwaltung"
-
-#~ msgid "keystone+cachemanagement"
-#~ msgstr "Keystone+Zwischenspeicherverwaltung"
-
-#~ msgid "Pipeline flavor:"
-#~ msgstr "Pipeline-Variante:"
-
-#~ msgid "Please specify the flavor of the pipeline to be used by Glance."
-#~ msgstr ""
-#~ "Bitte geben Sie die Variante der von Glance zu benutzenden Pipeline an."
-
-#~ msgid ""
-#~ "If you use the OpenStack Identity Service (Keystone), you might want to "
-#~ "select \"keystone\". If you don't use this service, you can safely choose "
-#~ "\"caching\" only."
-#~ msgstr ""
-#~ "Falls Sie den OpenStack-Identitätsdienst (Keystone) verwenden, möchten "
-#~ "Sie möglicherweise »Keystone« auswählen. Falls Sie diesen Dienst nicht "
-#~ "nutzen, können Sie problemlos »Zwischenspeichern« auswählen."
-
-#~ msgid "IP address of your RabbitMQ host:"
-#~ msgstr "IP-Adresse Ihres RabbitMQ-Rechners:"
-
-#~ msgid ""
-#~ "In order to interoperate with other components of OpenStack, this package "
-#~ "needs to connect to a central RabbitMQ server."
-#~ msgstr ""
-#~ "Um mit weiteren Bestandteilen von OpenStack zusammenzuarbeiten, muss sich "
-#~ "dieses Paket mit einem zentralen RabbitMQ-Server verbinden."
-
-#~ msgid "Please specify the IP address of that server."
-#~ msgstr "Bitte geben Sie die IP-Adresse dieses Servers an."
-
-#~ msgid "Username for connection to the RabbitMQ server:"
-#~ msgstr "Benutzername für die Verbindung mit dem RabbitMQ-Server:"
-
-#~ msgid "Please specify the username used to connect to the RabbitMQ server."
-#~ msgstr ""
-#~ "Bitte geben Sie den Benutzernamen ein, den Sie zum Verbinden mit dem "
-#~ "RabbitMQ-Server verwenden."
-
-#~ msgid "Password for connection to the RabbitMQ server:"
-#~ msgstr "Passwort für die Verbindung mit dem RabbitMQ-Server:"
-
-#~ msgid "Please specify the password used to connect to the RabbitMQ server."
-#~ msgstr ""
-#~ "Bitte geben Sie das Passwort ein, das Sie zum Verbinden mit dem RabbitMQ-"
-#~ "Server verwenden."

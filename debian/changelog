@@ -1,3 +1,9 @@
+gnocchi (3.0.4-4) unstable; urgency=medium
+
+  * German debconf translation update (Closes: #842481).
+
+ -- Thomas Goirand <zigo@debian.org>  Mon, 03 Apr 2017 18:13:32 +0200
+
 gnocchi (3.0.4-3) unstable; urgency=medium
 
   * Team upload.
